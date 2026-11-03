@@ -1,11 +1,5 @@
 name: Build Windows EXE
 
-# Compila l'eseguibile Windows su un runner Windows di GitHub e pubblica
-# lo ZIP pronto all'uso. Si avvia:
-#  - ad ogni push su main
-#  - manualmente dalla tab "Actions" (workflow_dispatch)
-#  - quando crei un tag di versione (es. v1.1) -> pubblica anche una Release
-
 on:
   push:
     branches: [ main ]
@@ -29,42 +23,48 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pillow cairosvg
+          pip install pillow
 
-      - name: Genera l'icona .ico (best effort)
+      - name: Genera l'icona .ico
         run: python tools/make_ico.py
         continue-on-error: true
 
       - name: Compila l'eseguibile con PyInstaller
-        run: >
-          pyinstaller --noconfirm --clean
-          --name "VideoSubtitlerAI"
-          --windowed
-          --onedir
-          --icon "assets/icon/icon.ico"
-          --collect-all customtkinter
-          --collect-all faster_whisper
-          --collect-all av
-          --collect-all ctranslate2
-          --collect-all tkinterdnd2
-          --collect-all argostranslate
-          --collect-all certifi
-          --add-data "assets;assets"
-          app_gui.py
+        shell: pwsh
+        run: |
+          $args = @(
+            '--noconfirm','--clean',
+            '--name','VideoSubtitlerAI',
+            '--windowed','--onedir',
+            '--collect-all','customtkinter',
+            '--collect-all','faster_whisper',
+            '--collect-all','av',
+            '--collect-all','ctranslate2',
+            '--collect-all','tkinterdnd2',
+            '--collect-all','argostranslate',
+            '--collect-all','certifi',
+            '--add-data','assets;assets'
+          )
+          if (Test-Path 'assets/icon/icon.ico') {
+            $args += @('--icon','assets/icon/icon.ico')
+            Write-Host 'Icona trovata: la includo.'
+          } else {
+            Write-Host 'Icona assente: compilo senza icona personalizzata.'
+          }
+          $args += 'app_gui.py'
+          pyinstaller @args
 
       - name: Crea lo ZIP di distribuzione
         shell: pwsh
         run: |
           Compress-Archive -Path "dist/VideoSubtitlerAI/*" -DestinationPath "VideoSubtitlerAI-win64.zip" -Force
 
-      # Scaricabile dalla pagina del run (tab Actions -> ultimo run -> Artifacts)
       - name: Pubblica l'artifact
         uses: actions/upload-artifact@v4
         with:
           name: VideoSubtitlerAI-win64
           path: VideoSubtitlerAI-win64.zip
 
-      # Se il push è un tag vX.Y, crea anche una Release con lo ZIP allegato
       - name: Pubblica la Release (solo sui tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
