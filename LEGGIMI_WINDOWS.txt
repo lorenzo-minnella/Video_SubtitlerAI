@@ -1,0 +1,50 @@
+==============================================================
+ VIDEO SUBTITLERAI - COME INSTALLARE SU WINDOWS
+==============================================================
+
+Questo pacchetto contiene il codice dell'app. Per creare l'eseguibile
+(.exe) e lo ZIP finale da usare, segui questi passi SUL PC WINDOWS.
+
+--------------------------------------------------------------
+PASSO 1 - Installa Python (solo la prima volta)
+--------------------------------------------------------------
+1. Vai su https://www.python.org/downloads/
+2. Scarica Python 3.10 o superiore.
+3. Avvia l'installer e IMPORTANTE: spunta la casella
+   "Add Python to PATH" prima di cliccare Install.
+
+--------------------------------------------------------------
+PASSO 2 - Estrai questo ZIP
+--------------------------------------------------------------
+Estrai la cartella "Video_SubtitlerAI" dove preferisci
+(es. sul Desktop).
+
+--------------------------------------------------------------
+PASSO 3 - Crea l'app (doppio clic)
+--------------------------------------------------------------
+1. Apri la cartella estratta.
+2. Fai DOPPIO CLIC su:  build_windows.bat
+3. Si apre una finestra nera: lascia che scarichi e compili
+   (la prima volta ci mette qualche minuto, serve internet).
+4. Al termine trovi:
+   - l'app pronta in:  dist\VideoSubtitlerAI\VideoSubtitlerAI.exe
+   - uno ZIP finale:   VideoSubtitlerAI-1.0-win64.zip
+
+--------------------------------------------------------------
+PASSO 4 - Usa l'app
+--------------------------------------------------------------
+Avvia:  dist\VideoSubtitlerAI\VideoSubtitlerAI.exe
+
+- Trascina un video nella finestra (o usa "Sfoglia").
+- Scegli lingua, qualita', eventuale traduzione e formato.
+- Premi "Genera sottotitoli".
+- Il file .srt viene salvato accanto al video.
+
+NOTE:
+- Non serve installare ffmpeg: e' gia' incluso.
+- Al primo avvio l'app scarica il modello AI (una tantum, serve
+  internet solo la prima volta).
+- La TRADUZIONE scarica un pacchetto lingua al primo uso: serve
+  una rete senza proxy/firewall aziendale.
+
+==============================================================

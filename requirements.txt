@@ -1,0 +1,21 @@
+# --- Core: speech-to-text (locale, gratuito) ---
+faster-whisper>=1.0.3
+
+# --- Decoder audio/video (incluso da faster-whisper; esplicitato per il bundle) ---
+# Include le librerie FFmpeg: NON serve ffmpeg installato sul sistema.
+av>=11.0.0
+
+# --- GUI moderna (dark, pulita) ---
+customtkinter>=5.2.2
+
+# --- Drag & drop del video nella finestra (opzionale) ---
+tkinterdnd2>=0.4.2
+
+# --- Traduzione offline (opzionale, caricata on-demand) ---
+argostranslate>=1.9.6
+
+# --- Certificati HTTPS per il download del pacchetto di traduzione ---
+certifi>=2024.2.2
+
+# --- Packaging eseguibile Windows ---
+pyinstaller>=6.6
