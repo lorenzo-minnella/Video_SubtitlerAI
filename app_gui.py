@@ -60,7 +60,7 @@ except Exception:
     _HAS_DND = False
 
 APP_NAME = "Video SubtitlerAI"
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg")
@@ -249,6 +249,17 @@ class SubtitlerApp:
                         variable=self.preview_var, fg_color=BRAND,
                         hover_color=BRAND_HOVER).pack(side="left")
 
+        # Riga dedicata: audio difficile (voci deboli/lontane/sussurrate)
+        extra2 = ctk.CTkFrame(opts, fg_color="transparent")
+        extra2.grid(row=4, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 10))
+        self.hard_var = ctk.BooleanVar(value=self.cfg.get("hard_audio", False))
+        ctk.CTkCheckBox(extra2, text="🎚️  Audio difficile (voci deboli/lontane/sussurrate)",
+                        variable=self.hard_var, fg_color=BRAND,
+                        hover_color=BRAND_HOVER).pack(side="left")
+        ctk.CTkLabel(extra2, text="— pre-amplifica l'audio e usa un rilevamento voce "
+                     "più sensibile. Consigliato il modello «large-v3».",
+                     font=ctk.CTkFont(size=11), text_color=TXT_DIM).pack(side="left", padx=(10, 0))
+
         # --- Azione ---
         self.run_btn = ctk.CTkButton(
             self.root, text="✨  Genera sottotitoli", command=self._start,
@@ -278,6 +289,7 @@ class SubtitlerApp:
             "theme": ctk.get_appearance_mode().lower(),
             "burn": self.burn_var.get(),
             "wrap_lines": self.wrap_var.get(),
+            "hard_audio": self.hard_var.get(),
         }
 
     def _persist(self):
@@ -405,6 +417,7 @@ class SubtitlerApp:
             fast = cfg["speed"] == "Veloce"
             wrap = cfg["wrap_lines"]
             burn = cfg["burn"]
+            hard = cfg["hard_audio"]
             preview = self.preview_var.get()
             files = list(self.files)
 
@@ -425,6 +438,7 @@ class SubtitlerApp:
                     0.0, f"{p}Avvio: {os.path.basename(m)}"))
                 res = self.engine.transcribe(
                     media, language=src_lang, task="transcribe", fast=fast,
+                    hard_audio=hard,
                     progress=lambda fr, ms, p=pfx: prog(fr, p + ms),
                     cancel_check=lambda: self.cancel_requested)
                 self.results[media] = res
