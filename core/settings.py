@@ -31,6 +31,7 @@ DEFAULTS = {
     "theme": "dark",          # dark | light
     "burn": False,             # masterizza sottotitoli nel video
     "wrap_lines": True,        # spezzatura righe intelligente
+    "hard_audio": False,       # modalità audio difficile (voci deboli/lontane)
 }
 
 
