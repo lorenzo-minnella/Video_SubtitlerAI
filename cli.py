@@ -66,6 +66,9 @@ def main(argv=None):
                         help="Traduci anche in questa lingua (salva orig + tradotto).")
     parser.add_argument("--fast", action="store_true",
                         help="Modalità rapida (beam=1).")
+    parser.add_argument("--hard-audio", action="store_true",
+                        help="Audio difficile: pre-amplifica e usa VAD sensibile "
+                             "(voci deboli/lontane/sussurrate).")
     parser.add_argument("--no-wrap", action="store_true",
                         help="Disabilita la spezzatura righe intelligente.")
     parser.add_argument("--burn", action="store_true",
@@ -83,7 +86,8 @@ def main(argv=None):
             continue
         print(f"\n🎬  {os.path.basename(media)}")
         res = engine.transcribe(media, language=args.language, task="transcribe",
-                                fast=args.fast, progress=_progress)
+                                fast=args.fast, hard_audio=args.hard_audio,
+                                progress=_progress)
         print(f"   Lingua rilevata: {res.language} "
               f"(confidenza {res.language_probability:.0%}) · {len(res.segments)} segmenti")
 
