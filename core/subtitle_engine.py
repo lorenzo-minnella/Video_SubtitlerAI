@@ -35,6 +35,7 @@ AVAILABLE_MODELS = {
     "base": "Veloce, qualità modesta (~1 GB)",
     "small": "Buon compromesso (~2 GB)",
     "medium": "Qualità alta, più lento (~5 GB)",
+    "distil-large-v3": "Quasi come large, molto più veloce (~5 GB)",
     "large-v3": "Qualità massima, il più lento (~10 GB)",
 }
 
@@ -43,6 +44,10 @@ SUPPORTED_LANGUAGES = {
     "auto": "Rileva automaticamente",
     "en": "Inglese",
     "it": "Italiano",
+    "es": "Spagnolo",
+    "fr": "Francese",
+    "de": "Tedesco",
+    "pt": "Portoghese",
 }
 
 # Lingue di destinazione per la traduzione
@@ -50,7 +55,25 @@ TRANSLATION_TARGETS = {
     "none": "Nessuna traduzione",
     "it": "Italiano",
     "en": "Inglese",
+    "es": "Spagnolo",
+    "fr": "Francese",
+    "de": "Tedesco",
+    "pt": "Portoghese",
 }
+
+# Parametri di spezzatura righe (standard sottotitolazione)
+MAX_CHARS_PER_LINE = 42
+MAX_LINES = 2
+MIN_SEG_DURATION = 1.0   # secondi
+MAX_SEG_DURATION = 7.0   # secondi
+
+
+@dataclass
+class Word:
+    """Una parola con i suoi tempi (word-level timestamp)."""
+    start: float
+    end: float
+    text: str
 
 
 @dataclass
@@ -60,6 +83,7 @@ class Segment:
     start: float
     end: float
     text: str
+    words: list["Word"] = field(default_factory=list)
 
 
 @dataclass
@@ -107,28 +131,63 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes}m {secs:02d}s"
 
 
-def segments_to_srt(segments: Iterable[Segment]) -> str:
-    """Serializza i segmenti in formato SubRip (.srt)."""
+def _wrap_text(text: str, max_chars: int = MAX_CHARS_PER_LINE,
+               max_lines: int = MAX_LINES) -> str:
+    """
+    Spezza il testo in righe di al più `max_chars` caratteri, bilanciando le
+    parole, con un massimo di `max_lines` righe. È lo standard dei sottotitoli:
+    righe corte e leggibili. Se il testo eccede, resta su max_lines righe
+    (l'ultima più lunga) perché il taglio temporale è già gestito a monte.
+    """
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+
+    words = text.split(" ")
+    lines: list[str] = []
+    current = ""
+    for w in words:
+        candidate = f"{current} {w}".strip()
+        if len(candidate) <= max_chars or not current:
+            current = candidate
+        else:
+            lines.append(current)
+            current = w
+            if len(lines) == max_lines - 1:
+                # Ultima riga: ci mettiamo tutto il resto
+                rest = w
+                idx = words.index(w) + 1
+                current = " ".join([rest] + words[idx:])
+                break
+    if current:
+        lines.append(current)
+    return "\n".join(lines[:max_lines])
+
+
+def segments_to_srt(segments: Iterable[Segment], wrap: bool = True) -> str:
+    """Serializza i segmenti in formato SubRip (.srt), con spezzatura righe."""
     lines: list[str] = []
     for seg in segments:
+        txt = _wrap_text(seg.text.strip()) if wrap else seg.text.strip()
         lines.append(str(seg.index))
         lines.append(
             f"{_format_timestamp(seg.start)} --> {_format_timestamp(seg.end)}"
         )
-        lines.append(seg.text.strip())
+        lines.append(txt)
         lines.append("")  # riga vuota separatore
     return "\n".join(lines).strip() + "\n"
 
 
-def segments_to_vtt(segments: Iterable[Segment]) -> str:
-    """Serializza i segmenti in formato WebVTT (.vtt)."""
+def segments_to_vtt(segments: Iterable[Segment], wrap: bool = True) -> str:
+    """Serializza i segmenti in formato WebVTT (.vtt), con spezzatura righe."""
     lines: list[str] = ["WEBVTT", ""]
     for seg in segments:
+        txt = _wrap_text(seg.text.strip()) if wrap else seg.text.strip()
         lines.append(
             f"{_format_timestamp(seg.start, vtt=True)} --> "
             f"{_format_timestamp(seg.end, vtt=True)}"
         )
-        lines.append(seg.text.strip())
+        lines.append(txt)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 
@@ -326,6 +385,7 @@ class SubtitleEngine:
         media_path: str,
         language: str = "auto",
         task: str = "transcribe",
+        fast: bool = False,
         progress: Optional[Callable[[float, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> TranscriptionResult:
@@ -336,6 +396,8 @@ class SubtitleEngine:
             media_path: percorso del video/audio.
             language: codice lingua sorgente o 'auto'.
             task: 'transcribe' (lingua originale) o 'translate' (-> inglese, nativo Whisper).
+            fast: se True usa parametri più rapidi (beam_size=1, greedy) a lieve
+                  scapito della qualità; utile su CPU o video lunghi.
             progress: callback(frazione 0..1, messaggio).
             cancel_check: ritorna True per interrompere.
         """
@@ -356,13 +418,19 @@ class SubtitleEngine:
         log.info("Analizzo l'audio (VAD) e avvio la trascrizione...")
 
         lang_arg = None if language == "auto" else language
+        # Parametri: in modalità "fast" usiamo greedy (beam_size=1) che su CPU è
+        # sensibilmente più veloce; altrimenti beam search per qualità migliore.
+        beam = 1 if fast else 5
         segments_iter, info = model.transcribe(
             media_path,
             language=lang_arg,
             task=task,
             vad_filter=True,  # rimuove silenzi lunghi -> segmenti più puliti
-            beam_size=5,
+            beam_size=beam,
+            condition_on_previous_text=False,  # evita loop di ripetizioni, più stabile
+            word_timestamps=True,  # tempi parola per parola (per split preciso)
         )
+        log.info("Parametri: beam_size=%d, fast=%s, word_timestamps=True", beam, fast)
 
         duration = float(getattr(info, "duration", 0.0) or 0.0)
         result = TranscriptionResult(
@@ -384,8 +452,14 @@ class SubtitleEngine:
             text = (seg.text or "").strip()
             if not text:
                 continue
+            words = []
+            for w in (getattr(seg, "words", None) or []):
+                wt = (w.word or "").strip()
+                if wt:
+                    words.append(Word(start=float(w.start), end=float(w.end), text=wt))
             result.segments.append(
-                Segment(index=idx, start=float(seg.start), end=float(seg.end), text=text)
+                Segment(index=idx, start=float(seg.start), end=float(seg.end),
+                        text=text, words=words)
             )
             idx += 1
             last_audio_pos = float(seg.end)
@@ -415,19 +489,175 @@ class SubtitleEngine:
         total_elapsed = time.monotonic() - start_time
         log.info("Trascrizione completata: %d segmenti in %.1fs.",
                  len(result.segments), total_elapsed)
+
+        # Ri-segmentazione: spezza i segmenti troppo lunghi (durata o caratteri)
+        # usando i word-level timestamp, per sottotitoli più leggibili.
+        before = len(result.segments)
+        result.segments = resegment(result.segments)
+        log.info("Ri-segmentazione: %d -> %d segmenti.", before, len(result.segments))
+
         if progress:
             progress(1.0, f"Trascrizione completata in {_fmt_duration(total_elapsed)}.")
         return result
 
 
+def resegment(segments: list[Segment]) -> list[Segment]:
+    """
+    Suddivide i segmenti che superano MAX_SEG_DURATION o che sarebbero troppo
+    lunghi da leggere, sfruttando i tempi parola per parola. Rinumera l'indice.
+    Se un segmento non ha word-level, lo lascia invariato.
+    """
+    out: list[Segment] = []
+    for seg in segments:
+        too_long = (seg.end - seg.start) > MAX_SEG_DURATION
+        too_wide = len(seg.text) > MAX_CHARS_PER_LINE * MAX_LINES
+        if not seg.words or not (too_long or too_wide):
+            out.append(seg)
+            continue
+
+        # Accumula parole finché non si supera durata o larghezza, poi spezza.
+        chunk: list[Word] = []
+        chunk_chars = 0
+        for w in seg.words:
+            add_len = len(w.text) + 1
+            dur = (w.end - chunk[0].start) if chunk else 0.0
+            if chunk and (dur > MAX_SEG_DURATION
+                          or chunk_chars + add_len > MAX_CHARS_PER_LINE * MAX_LINES):
+                out.append(_chunk_to_segment(chunk))
+                chunk, chunk_chars = [], 0
+            chunk.append(w)
+            chunk_chars += add_len
+        if chunk:
+            out.append(_chunk_to_segment(chunk))
+
+    # Fonde i micro-segmenti (più corti di MIN_SEG_DURATION) col vicino, se la
+    # fusione non supera i limiti di durata/larghezza. Evita sottotitoli-lampo.
+    merged = _merge_tiny(out)
+    for i, s in enumerate(merged, 1):
+        s.index = i
+    return merged
+
+
+def _merge_tiny(segments: list[Segment]) -> list[Segment]:
+    """Fonde i segmenti più brevi di MIN_SEG_DURATION col precedente o, in
+    mancanza, col successivo, se la fusione rispetta i limiti."""
+    def _fits(a: Segment, b: Segment) -> bool:
+        return ((b.end - a.start) <= MAX_SEG_DURATION
+                and len(a.text) + len(b.text) + 1 <= MAX_CHARS_PER_LINE * MAX_LINES)
+
+    out: list[Segment] = []
+    i = 0
+    n = len(segments)
+    while i < n:
+        seg = segments[i]
+        short = (seg.end - seg.start) < MIN_SEG_DURATION
+        if short and out and _fits(out[-1], seg):
+            prev = out[-1]
+            prev.end = seg.end
+            prev.text = (prev.text + " " + seg.text).strip()
+            prev.words = prev.words + seg.words
+            i += 1
+            continue
+        if short and i + 1 < n and _fits(seg, segments[i + 1]):
+            nxt = segments[i + 1]
+            merged = Segment(index=0, start=seg.start, end=nxt.end,
+                             text=(seg.text + " " + nxt.text).strip(),
+                             words=seg.words + nxt.words)
+            out.append(merged)
+            i += 2
+            continue
+        out.append(seg)
+        i += 1
+    return out
+
+
+def _chunk_to_segment(words: list[Word]) -> Segment:
+    text = " ".join(w.text for w in words).strip()
+    return Segment(index=0, start=words[0].start, end=words[-1].end,
+                   text=text, words=list(words))
+
+
 def write_subtitles(result: TranscriptionResult, output_path: str,
                     fmt: str = "srt") -> str:
-    """Scrive i segmenti su file nel formato richiesto ('srt' o 'vtt')."""
+    """Scrive i segmenti su file nel formato richiesto ('srt', 'vtt' o 'txt')."""
     fmt = fmt.lower()
     if fmt == "vtt":
         content = segments_to_vtt(result.segments)
+    elif fmt == "txt":
+        content = segments_to_text(result.segments)
     else:
         content = segments_to_srt(result.segments)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(content)
     return output_path
+
+
+def write_subtitles_multi(result: TranscriptionResult, out_dir: str, base: str,
+                          lang: str, formats: list[str]) -> list[str]:
+    """Scrive gli stessi sottotitoli in più formati. Ritorna i path prodotti."""
+    import os as _os
+    paths = []
+    for fmt in formats:
+        p = _os.path.join(out_dir, f"{base}.{lang}.{fmt}")
+        write_subtitles(result, p, fmt=fmt)
+        paths.append(p)
+    return paths
+
+
+def has_ffmpeg() -> bool:
+    """True se un eseguibile ffmpeg è disponibile (per l'hardsub)."""
+    import shutil
+    return shutil.which("ffmpeg") is not None
+
+
+def burn_subtitles(video_path: str, srt_path: str, output_path: str,
+                   progress: Optional[Callable[[float, str], None]] = None) -> str:
+    """
+    Masterizza (hardsub) i sottotitoli SRT dentro il video, producendo un nuovo
+    file. Richiede ffmpeg nel PATH. Solleva RuntimeError se ffmpeg manca o fallisce.
+    """
+    import subprocess
+    if not has_ffmpeg():
+        raise RuntimeError(
+            "ffmpeg non trovato: serve per masterizzare i sottotitoli nel video. "
+            "Installa ffmpeg e riprova (l'estrazione sottotitoli non lo richiede)."
+        )
+    if progress:
+        progress(0.0, "Masterizzo i sottotitoli nel video (ffmpeg)...")
+
+    # Il filtro subtitles vuole il path con escape particolare su Windows.
+    srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
+    vf = f"subtitles='{srt_escaped}'"
+    cmd = ["ffmpeg", "-y", "-i", video_path, "-vf", vf,
+           "-c:a", "copy", output_path]
+    log.info("Hardsub: %s", " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        log.error("ffmpeg fallito: %s", proc.stderr[-800:])
+        raise RuntimeError("Masterizzazione fallita. Vedi il log per i dettagli.")
+    if progress:
+        progress(1.0, "Video con sottotitoli creato.")
+    return output_path
+
+
+def segments_to_text(segments: Iterable[Segment]) -> str:
+    """
+    Trascrizione come testo leggibile (senza timestamp), formattata in
+    paragrafi. Utile per avere il parlato come documento, oltre ai sottotitoli.
+    """
+    text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+    # Spezza in paragrafi ogni ~4 frasi per leggibilità.
+    import re
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    paragraphs, chunk = [], []
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        chunk.append(s)
+        if len(chunk) >= 4:
+            paragraphs.append(" ".join(chunk))
+            chunk = []
+    if chunk:
+        paragraphs.append(" ".join(chunk))
+    return "\n\n".join(paragraphs) + "\n"

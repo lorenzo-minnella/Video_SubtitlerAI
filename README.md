@@ -1,24 +1,36 @@
 # 🎬 Video SubtitlerAI
 
-Genera **sottotitoli** (`.srt` / `.vtt`) con timestamp a partire da un video o audio,
-usando **faster-whisper** in locale. Gratuito, offline, nessuna API key.
+# 🎬 Video SubtitlerAI
 
-- 🧠 Riconoscimento vocale AI (faster-whisper) con **timestamp per segmento**
-- 🌍 Lingue: **inglese** e **italiano** + **rilevamento automatico**
-- 🔁 **Traduzione** offline dei sottotitoli (es. inglese → italiano) via Argos Translate
-- 🖥️ **Interfaccia grafica** scura e pulita (CustomTkinter) con drag & drop
-- 📄 Output **.srt** o **.vtt**
+Genera **sottotitoli** (`.srt` / `.vtt` / `.txt`) con timestamp a partire da uno o più
+video/audio, usando **faster-whisper** in locale. Gratuito, offline, nessuna API key.
+
+- 🧠 Riconoscimento vocale AI (faster-whisper) con **timestamp parola per parola**
+- ✂️ **Spezzatura righe intelligente** (max ~42 caratteri, 2 righe) e **ri-segmentazione**
+  automatica: sottotitoli brevi e leggibili, standard professionale
+- 🌍 Lingue: **inglese, italiano, spagnolo, francese, tedesco, portoghese** +
+  **rilevamento automatico**
+- 🔁 **Traduzione** offline via Argos Translate: salva **SEMPRE sia l'originale sia
+  il tradotto**
+- 👀 **Anteprima e modifica** dei segmenti prima del salvataggio
+- 🔥 **Masterizzazione (hardsub)**: crea un video con i sottotitoli impressi (se ffmpeg presente)
+- 📦 **Coda multi-file** (batch) + aggiunta di **cartelle intere**
+- 📄 **Formati multipli** in un colpo: `.srt`, `.vtt`, `.txt`
+- ⚡ **Preset velocità** (Qualità / Veloce) e modello `distil-large-v3` (veloce e accurato)
+- ⚙️ **Impostazioni persistenti** (ricorda modello, lingua, cartella, tema…)
+- 🌗 **Tema chiaro/scuro**, 📂 "Apri cartella" a fine lavoro, 🔔 notifica di sistema
 - 🪟 **Installabile su Windows** come eseguibile `.exe`
 
 ---
 
 ## Interfaccia
 
-1. Trascina il video nella finestra (o «Sfoglia»).
-2. Scegli **lingua audio** (o lascia *Rileva automaticamente*), **qualità** del modello,
-   l'eventuale **traduzione** e il **formato** file.
-3. Premi **Genera sottotitoli**. Il file viene salvato accanto al video
-   (es. `film.en.srt`).
+1. Trascina uno o più video nella finestra (o «＋ Aggiungi»).
+2. Scegli **lingua audio** (o *Rileva automaticamente*), **qualità** del modello,
+   **velocità**, l'eventuale **traduzione**, il **formato** e la **cartella output**.
+3. Premi **Genera sottotitoli**. I file vengono salvati con il suffisso della lingua
+   (es. `film.en.srt`). Con la traduzione attiva ottieni sia `film.en.srt`
+   sia `film.it.srt`.
 
 ---
 
@@ -35,7 +47,7 @@ Al primo utilizzo il modello Whisper viene **scaricato automaticamente** (una ta
 ## Esecuzione da sorgente
 
 ```bash
-cd "10. Video_SubtitlerAI"
+cd "2. Video_SubtitlerAI"
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -45,18 +57,22 @@ python app_gui.py
 
 # oppure da riga di comando
 python cli.py video.mp4 --model small
-python cli.py video.mp4 --language en --translate it --format srt
+python cli.py video.mp4 --language en --translate it --format srt   # orig + tradotto
+python cli.py *.mp4 --model small --fast                            # batch, modalità veloce
 ```
 
 ### Opzioni CLI
 
 | Flag | Descrizione | Default |
 |------|-------------|---------|
-| `-l, --language` | Lingua audio (`auto`, `en`, `it`, ...) | `auto` |
-| `-m, --model` | Modello (`tiny`/`base`/`small`/`medium`/`large-v3`) | `small` |
-| `-f, --format` | Formato output (`srt`/`vtt`) | `srt` |
-| `-t, --translate` | Traduci i sottotitoli in questa lingua (`it`, `en`, ...) | nessuna |
-| `-o, --output` | Path output (solo singolo file) | accanto al video |
+| `-l, --language` | Lingua audio (`auto`, `en`, `it`, `es`, `fr`, `de`, `pt`) | `auto` |
+| `-m, --model` | Modello (`tiny`/`base`/`small`/`medium`/`distil-large-v3`/`large-v3`) | `small` |
+| `-f, --format` | Uno o più formati (`srt vtt txt`) | `srt` |
+| `-t, --translate` | Traduci anche in questa lingua (salva orig + tradotto) | nessuna |
+| `--fast` | Modalità rapida (beam=1): più veloce, qualità lievemente inferiore | off |
+| `--no-wrap` | Disabilita la spezzatura righe intelligente | off |
+| `--burn` | Masterizza i sottotitoli nel video (richiede ffmpeg) | off |
+| `-d, --output-dir` | Cartella di output | accanto a ogni file |
 
 ---
 
@@ -112,7 +128,7 @@ errore, quel file dice cosa sta succedendo.
 ## Struttura
 
 ```
-10. Video_SubtitlerAI/
+2. Video_SubtitlerAI/
 ├─ app_gui.py              # interfaccia grafica
 ├─ cli.py                  # versione riga di comando
 ├─ core/
