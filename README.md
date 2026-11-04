@@ -13,6 +13,8 @@ video/audio, usando **faster-whisper** in locale. Gratuito, offline, nessuna API
 - 🔁 **Traduzione** offline via Argos Translate: salva **SEMPRE sia l'originale sia
   il tradotto**
 - 👀 **Anteprima e modifica** dei segmenti prima del salvataggio
+- 🎚️ **Audio difficile**: modalità per voci **deboli / lontane / sussurrate** —
+  pre-amplifica l'audio e usa un rilevamento voce più sensibile
 - 🔥 **Masterizzazione (hardsub)**: crea un video con i sottotitoli impressi (se ffmpeg presente)
 - 📦 **Coda multi-file** (batch) + aggiunta di **cartelle intere**
 - 📄 **Formati multipli** in un colpo: `.srt`, `.vtt`, `.txt`
@@ -86,6 +88,23 @@ python cli.py *.mp4 --model small --fast                            # batch, mod
 | `large-v3` | ⭐⭐⭐⭐⭐ | ⚡ | qualità massima, richiede più RAM/tempo |
 
 Su CPU conviene `small`/`medium`; con GPU NVIDIA (CUDA) l'app la usa in automatico.
+
+### Voci deboli, lontane o sussurrate
+
+Attiva **«🎚️ Audio difficile»** (GUI) oppure `--hard-audio` (CLI). Questa modalità:
+
+- **pre-amplifica** l'audio (normalizzazione di picco, guadagno fino a 8×) per rendere
+  udibili al modello le voci basse;
+- usa un **rilevamento voce (VAD) più sensibile** (soglia bassa) così il parlato
+  sussurrato non viene scartato come silenzio;
+- riattiva il contesto tra i segmenti per ricostruire meglio le frasi incerte.
+
+Per i risultati migliori su audio difficile, abbina il modello **`large-v3`**
+(il più accurato). Esempio CLI:
+
+```bash
+python cli.py lezione.mp4 --language en --model large-v3 --hard-audio
+```
 
 ---
 
