@@ -436,15 +436,17 @@ class SubtitleEngine:
 
         # VAD: in modalità "audio difficile" soglia bassa (sensibile ai suoni deboli)
         # e silenzio minimo più lungo, così le voci sussurrate non vengono scartate.
+        # IMPORTANTE: condition_on_previous_text resta SEMPRE False. Su audio lungo
+        # con True gli offset dei timestamp si accumulano e la trascrizione si
+        # interrompe a metà senza errore (bug noto, peggiore sui modelli distil).
         if hard_audio:
             vad_params = dict(threshold=0.2, min_silence_duration_ms=700,
                               speech_pad_ms=400)
             no_speech_thr = 0.35   # non scartare facilmente segmenti a basso volume
-            cond_prev = True       # più contesto aiuta sul parlato difficile
         else:
             vad_params = None
             no_speech_thr = 0.6
-            cond_prev = False      # evita loop di ripetizioni, più stabile
+        cond_prev = False          # sempre False: evita accumulo timestamp e loop
 
         tr_kwargs = dict(
             language=lang_arg,
@@ -470,6 +472,11 @@ class SubtitleEngine:
         )
         log.info("Durata audio: %.1fs | lingua rilevata: %s (%.0f%%)",
                  duration, result.language, result.language_probability * 100)
+        if "distil" in self.model_size and duration > 900:
+            log.warning("Modello '%s' su audio lungo (%.0f min): i modelli distil "
+                        "possono essere meno stabili sul long-form. Per video lunghi "
+                        "difficili è consigliato 'large-v3'.",
+                        self.model_size, duration / 60)
 
         start_time = time.monotonic()
         idx = 1
@@ -482,17 +489,25 @@ class SubtitleEngine:
             text = (seg.text or "").strip()
             if not text:
                 continue
+            seg_start = float(seg.start)
+            seg_end = float(seg.end)
+            # Guardia anti-timestamp-degeneri: se i tempi tornano indietro o sono
+            # incoerenti, non far collassare il resto; logga e salta il segmento.
+            if seg_end < seg_start or seg_start + 0.01 < last_audio_pos - 30.0:
+                log.warning("Segmento con timestamp anomali (start=%.1f end=%.1f, "
+                            "pos=%.1f): lo salto.", seg_start, seg_end, last_audio_pos)
+                continue
             words = []
             for w in (getattr(seg, "words", None) or []):
                 wt = (w.word or "").strip()
                 if wt:
                     words.append(Word(start=float(w.start), end=float(w.end), text=wt))
             result.segments.append(
-                Segment(index=idx, start=float(seg.start), end=float(seg.end),
+                Segment(index=idx, start=seg_start, end=seg_end,
                         text=text, words=words)
             )
             idx += 1
-            last_audio_pos = float(seg.end)
+            last_audio_pos = max(last_audio_pos, seg_end)
 
             # Log periodico (ogni ~10s di audio) per tracciare l'avanzamento nel file.
             if last_audio_pos - last_log >= 10.0:

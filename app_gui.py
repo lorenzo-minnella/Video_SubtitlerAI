@@ -60,7 +60,7 @@ except Exception:
     _HAS_DND = False
 
 APP_NAME = "Video SubtitlerAI"
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg")

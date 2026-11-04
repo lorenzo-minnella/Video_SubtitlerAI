@@ -99,8 +99,10 @@ Attiva **«🎚️ Audio difficile»** (GUI) oppure `--hard-audio` (CLI). Questa
   sussurrato non viene scartato come silenzio;
 - riattiva il contesto tra i segmenti per ricostruire meglio le frasi incerte.
 
-Per i risultati migliori su audio difficile, abbina il modello **`large-v3`**
-(il più accurato). Esempio CLI:
+Per i risultati migliori su audio difficile **e sui video lunghi**, usa il modello
+**`large-v3`** (il più accurato e il più stabile sul long-form). Evita i modelli
+`distil-*` sui video lunghi/difficili: sono più veloci ma meno robusti e su audio
+di molti minuti la trascrizione può interrompersi prima della fine. Esempio CLI:
 
 ```bash
 python cli.py lezione.mp4 --language en --model large-v3 --hard-audio
