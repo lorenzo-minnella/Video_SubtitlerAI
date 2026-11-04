@@ -1,5 +1,11 @@
 name: Build Windows EXE
 
+# Compila l'eseguibile Windows su un runner Windows di GitHub e pubblica
+# lo ZIP pronto all'uso. Si avvia:
+#  - ad ogni push su main
+#  - manualmente dalla tab "Actions" (workflow_dispatch)
+#  - quando crei un tag di versione (es. v1.1) -> pubblica anche una Release
+
 on:
   push:
     branches: [ main ]
@@ -7,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write   # necessario per creare la Release sui tag
 
 jobs:
   build:
@@ -26,9 +32,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pillow
+          pip install pillow cairosvg
 
-      - name: Genera l'icona .ico
+      - name: Genera l'icona .ico (best effort)
         run: python tools/make_ico.py
         continue-on-error: true
 
@@ -39,11 +45,9 @@ jobs:
             '--noconfirm','--clean',
             '--name','VideoSubtitlerAI',
             '--windowed','--onedir',
-            '--collect-all','customtkinter',
             '--collect-all','faster_whisper',
             '--collect-all','av',
             '--collect-all','ctranslate2',
-            '--collect-all','tkinterdnd2',
             '--collect-all','argostranslate',
             '--collect-all','certifi',
             '--add-data','assets;assets'
@@ -62,12 +66,14 @@ jobs:
         run: |
           Compress-Archive -Path "dist/VideoSubtitlerAI/*" -DestinationPath "VideoSubtitlerAI-win64.zip" -Force
 
+      # Scaricabile dalla pagina del run (tab Actions -> ultimo run -> Artifacts)
       - name: Pubblica l'artifact
         uses: actions/upload-artifact@v4
         with:
           name: VideoSubtitlerAI-win64
           path: VideoSubtitlerAI-win64.zip
 
+      # Se il push è un tag vX.Y, crea anche una Release con lo ZIP allegato
       - name: Pubblica la Release (solo sui tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

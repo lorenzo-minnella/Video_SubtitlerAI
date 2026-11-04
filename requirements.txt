@@ -8,11 +8,8 @@ av>=11.0.0
 # --- Pre-amplificazione audio (voci deboli/lontane); arriva già con faster-whisper ---
 numpy>=1.24
 
-# --- GUI moderna (dark, pulita) ---
-customtkinter>=5.2.2
-
-# --- Drag & drop del video nella finestra (opzionale) ---
-tkinterdnd2>=0.4.2
+# --- GUI moderna (Qt nativo, dark/light) ---
+PySide6>=6.6
 
 # --- Traduzione offline (opzionale, caricata on-demand) ---
 argostranslate>=1.9.6

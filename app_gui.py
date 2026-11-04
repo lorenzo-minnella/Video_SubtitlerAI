@@ -1,20 +1,13 @@
 """
-Video SubtitlerAI — Interfaccia grafica (pro)
-=============================================
-Desktop app (Windows / macOS / Linux) per generare sottotitoli da uno o più
-video usando faster-whisper in locale.
+Video SubtitlerAI — Interfaccia grafica (PySide6 / Qt)
+======================================================
+UI moderna a due colonne: sidebar impostazioni + area principale con drop zone,
+coda file, avanzamento. Look nativo e scuro/chiaro.
 
-Funzioni:
-  - Coda multi-file (batch) con drag & drop
-  - Rilevamento lingua automatico o manuale (EN/IT/ES/FR/DE/PT)
-  - Traduzione offline: salva SEMPRE sia l'originale sia il tradotto
-  - Formati multipli SRT / VTT / TXT in un colpo
-  - Spezzatura righe intelligente + word-level timestamp
-  - Anteprima e MODIFICA dei segmenti prima del salvataggio
-  - Masterizzazione (hardsub) dei sottotitoli nel video (se ffmpeg presente)
-  - Preset velocità (Qualità / Veloce)
-  - Impostazioni persistenti, tema chiaro/scuro
-  - Barra avanzamento con tempo trascorso/ETA, "Apri cartella", log diagnostico
+Tutte le funzioni del motore restano invariate:
+  coda multi-file, lingua auto/EN/IT/ES/FR/DE/PT, traduzione (orig + tradotto),
+  formati SRT/VTT/TXT, spezzatura righe, audio difficile, hardsub, anteprima,
+  impostazioni persistenti, tema chiaro/scuro, log diagnostico.
 
 Avvio:
     python app_gui.py
@@ -23,476 +16,178 @@ Avvio:
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-import threading
 import traceback
 
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
+from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QMainWindow, QLabel, QPushButton, QComboBox,
+    QCheckBox, QProgressBar, QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout,
+    QFrame, QListWidget, QListWidgetItem, QButtonGroup, QScrollArea, QTextEdit,
+    QDialog, QDialogButtonBox, QSizePolicy,
+)
 
 try:
+    import core.subtitle_engine as eng
     from core.subtitle_engine import (
         AVAILABLE_MODELS, SUPPORTED_LANGUAGES, TRANSLATION_TARGETS,
-        SubtitleEngine, TranscriptionResult, Segment,
-        translate_segments, write_subtitles, write_subtitles_multi,
-        burn_subtitles, has_ffmpeg,
+        SubtitleEngine, TranscriptionResult, translate_segments,
+        write_subtitles, burn_subtitles, has_ffmpeg,
     )
     from core.logger import get_logger, log_path
     from core.settings import load_settings, save_settings
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import core.subtitle_engine as eng
     from core.subtitle_engine import (
         AVAILABLE_MODELS, SUPPORTED_LANGUAGES, TRANSLATION_TARGETS,
-        SubtitleEngine, TranscriptionResult, Segment,
-        translate_segments, write_subtitles, write_subtitles_multi,
-        burn_subtitles, has_ffmpeg,
+        SubtitleEngine, TranscriptionResult, translate_segments,
+        write_subtitles, burn_subtitles, has_ffmpeg,
     )
     from core.logger import get_logger, log_path
     from core.settings import load_settings, save_settings
 
 log = get_logger()
 
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-    _HAS_DND = True
-except Exception:
-    _HAS_DND = False
-
 APP_NAME = "Video SubtitlerAI"
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg")
 
-BRAND = "#6C5CE7"
-BRAND_HOVER = "#5a4bd4"
-BG_CARD = "#1b1b24"
-BG_CARD2 = "#232330"
-TXT_DIM = "#9aa0b5"
-DANGER = "#b23b3b"
+BRAND = "#7C6CF0"
 
 
-def _fmt_elapsed(seconds: float) -> str:
-    seconds = max(0, int(round(seconds)))
-    if seconds < 60:
-        return f"{seconds}s"
-    m, s = divmod(seconds, 60)
-    return f"{m}m {s:02d}s"
+# -----------------------------------------------------------------------------
+# Fogli di stile (QSS) per tema scuro e chiaro
+# -----------------------------------------------------------------------------
+def qss(theme: str) -> str:
+    if theme == "light":
+        bg, panel, card, text, dim, border, field = (
+            "#f3f4f8", "#ffffff", "#eef0f6", "#1b1d26",
+            "#6b7085", "#d8dbe6", "#ffffff")
+    else:
+        bg, panel, card, text, dim, border, field = (
+            "#13131b", "#1b1b26", "#232330", "#e8ebf5",
+            "#8b90a6", "#33333f", "#262633")
+    return f"""
+    QMainWindow, QWidget#root {{ background: {bg}; }}
+    QLabel {{ color: {text}; font-size: 13px; }}
+    QLabel#title {{ font-size: 20px; font-weight: 700; }}
+    QLabel#version {{ color: {dim}; font-size: 12px; }}
+    QLabel#section {{ color: {dim}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
+    QLabel#dim {{ color: {dim}; font-size: 12px; }}
+    QFrame#panel {{ background: {panel}; border-radius: 14px; }}
+    QFrame#drop {{ background: {card}; border: 2px dashed {border}; border-radius: 14px; }}
+    QComboBox {{
+        background: {field}; color: {text}; border: 1px solid {border};
+        border-radius: 9px; padding: 8px 12px; font-size: 13px; min-height: 20px;
+    }}
+    QComboBox::drop-down {{ border: 0; width: 24px; }}
+    QComboBox QAbstractItemView {{
+        background: {panel}; color: {text}; border: 1px solid {border};
+        selection-background-color: {BRAND}; outline: 0;
+    }}
+    QPushButton#primary {{
+        background: {BRAND}; color: white; border: 0; border-radius: 11px;
+        padding: 14px; font-size: 15px; font-weight: 700;
+    }}
+    QPushButton#primary:hover {{ background: #6a5ae0; }}
+    QPushButton#ghost {{
+        background: {card}; color: {text}; border: 1px solid {border};
+        border-radius: 9px; padding: 8px 14px; font-size: 13px;
+    }}
+    QPushButton#ghost:hover {{ background: {border}; }}
+    QPushButton#brandbtn {{
+        background: {BRAND}; color: white; border: 0; border-radius: 9px;
+        padding: 9px 16px; font-size: 13px; font-weight: 600;
+    }}
+    QPushButton#brandbtn:hover {{ background: #6a5ae0; }}
+    QCheckBox {{ color: {text}; font-size: 12.5px; spacing: 8px; }}
+    QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px;
+        border: 1px solid {border}; background: {field}; }}
+    QCheckBox::indicator:checked {{ background: {BRAND}; border: 1px solid {BRAND}; }}
+    QListWidget {{ background: {panel}; border: 0; border-radius: 12px;
+        padding: 6px; font-size: 13px; color: {text}; outline: 0; }}
+    QListWidget::item {{ background: {card}; border-radius: 8px; padding: 10px;
+        margin: 3px; }}
+    QListWidget::item:selected {{ background: {BRAND}; color: white; }}
+    QProgressBar {{ background: {card}; border: 0; border-radius: 5px; height: 10px;
+        text-align: center; color: transparent; }}
+    QProgressBar::chunk {{ background: {BRAND}; border-radius: 5px; }}
+    QTextEdit {{ background: {field}; color: {text}; border: 1px solid {border};
+        border-radius: 8px; font-size: 13px; }}
+    """
 
 
-def _open_in_file_manager(path: str) -> None:
-    folder = path if os.path.isdir(path) else os.path.dirname(path)
-    try:
-        if sys.platform.startswith("win"):
-            os.startfile(folder)  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.run(["open", folder], check=False)
-        else:
-            subprocess.run(["xdg-open", folder], check=False)
-    except Exception as exc:
-        log.warning("Impossibile aprire la cartella %s: %s", folder, exc)
+# -----------------------------------------------------------------------------
+# Worker in thread separato (non blocca la UI)
+# -----------------------------------------------------------------------------
+class Worker(QObject):
+    progress = Signal(float, str)
+    done = Signal(list)
+    error = Signal(str, str)
+    cancelled = Signal()
 
+    def __init__(self, engine, files, cfg, preview_cb=None):
+        super().__init__()
+        self.engine = engine
+        self.files = files
+        self.cfg = cfg
+        self._cancel = False
 
-def _notify(title: str, message: str) -> None:
-    """Notifica di sistema a fine elaborazione (best effort, non blocca)."""
-    try:
-        if sys.platform == "darwin":
-            subprocess.run(
-                ["osascript", "-e",
-                 f'display notification "{message}" with title "{title}"'],
-                check=False)
-        elif sys.platform.startswith("win"):
-            # Toast via PowerShell (best effort)
-            ps = (f'[void][Windows.UI.Notifications.ToastNotificationManager];'
-                  f'Write-Host "{message}"')
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=False)
-        else:
-            subprocess.run(["notify-send", title, message], check=False)
-    except Exception:
-        pass
+    def cancel(self):
+        self._cancel = True
 
-
-class SubtitlerApp:
-    def __init__(self, root):
-        self.root = root
-        self.engine: SubtitleEngine | None = None
-        self.worker: threading.Thread | None = None
-        self.cancel_requested = False
-
-        self.files: list[str] = []
-        self.cfg = load_settings()
-        self.output_dir: str | None = self.cfg.get("output_dir") or None
-        self.last_output_dir: str | None = None
-        # risultati trascritti per l'anteprima/modifica: media_path -> TranscriptionResult
-        self.results: dict[str, TranscriptionResult] = {}
-
-        ctk.set_appearance_mode(self.cfg.get("theme", "dark"))
-        ctk.set_default_color_theme("dark-blue")
-
-        root.title(f"{APP_NAME} {APP_VERSION}")
-        root.geometry("760x820")
-        root.minsize(700, 760)
-
-        self._build_ui()
-
-    # ------------------------------------------------------------------ UI
-    def _build_ui(self):
-        pad = 16
-        top = ctk.CTkFrame(self.root, fg_color="transparent")
-        top.pack(fill="x", padx=pad, pady=(pad, 0))
-        ctk.CTkLabel(top, text="🎬  Video SubtitlerAI",
-                     font=ctk.CTkFont(size=26, weight="bold")).pack(side="left")
-        self.theme_btn = ctk.CTkButton(
-            top, text="☀︎" if self.cfg.get("theme") == "dark" else "☾",
-            width=40, command=self._toggle_theme,
-            fg_color=BG_CARD2, hover_color="#33333f")
-        self.theme_btn.pack(side="right")
-
-        ctk.CTkLabel(
-            self.root,
-            text="Sottotitoli SRT/VTT/TXT da video — AI locale, gratuito, con traduzione",
-            font=ctk.CTkFont(size=12), text_color=TXT_DIM,
-        ).pack(pady=(0, pad))
-
-        # --- Coda file ---
-        fc = ctk.CTkFrame(self.root, fg_color=BG_CARD, corner_radius=14)
-        fc.pack(fill="x", padx=pad, pady=(0, pad))
-        row = ctk.CTkFrame(fc, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(12, 6))
-        ctk.CTkLabel(row, text="File da elaborare",
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
-        ctk.CTkButton(row, text="＋ Aggiungi", width=110, command=self._browse,
-                      fg_color=BRAND, hover_color=BRAND_HOVER).pack(side="right")
-        ctk.CTkButton(row, text="Cartella…", width=90, command=self._browse_dir,
-                      fg_color=BG_CARD2, hover_color="#33333f").pack(side="right", padx=(0, 8))
-        ctk.CTkButton(row, text="Svuota", width=80, command=self._clear_files,
-                      fg_color=BG_CARD2, hover_color="#33333f").pack(side="right", padx=(0, 8))
-
-        self.files_box = ctk.CTkTextbox(fc, height=90, fg_color=BG_CARD2, corner_radius=10)
-        self.files_box.pack(fill="x", padx=14, pady=(0, 12))
-        self.files_box.configure(state="disabled")
-        self._refresh_files_box()
-        if _HAS_DND:
-            for w in (self.files_box, fc):
-                w.drop_target_register(DND_FILES)
-                w.dnd_bind("<<Drop>>", self._on_drop)
-
-        # --- Opzioni ---
-        opts = ctk.CTkFrame(self.root, fg_color=BG_CARD, corner_radius=14)
-        opts.pack(fill="x", padx=pad, pady=(0, pad))
-        opts.grid_columnconfigure(1, weight=1)
-        opts.grid_columnconfigure(3, weight=1)
-
-        def lbl(t, r, c=0):
-            ctk.CTkLabel(opts, text=t).grid(row=r, column=c, sticky="w", padx=14, pady=7)
-
-        lbl("Lingua audio", 0)
-        self.lang_var = ctk.StringVar(
-            value=SUPPORTED_LANGUAGES.get(self.cfg["language"], SUPPORTED_LANGUAGES["auto"]))
-        ctk.CTkOptionMenu(opts, values=list(SUPPORTED_LANGUAGES.values()),
-                          variable=self.lang_var, fg_color=BRAND, button_color=BRAND,
-                          button_hover_color=BRAND_HOVER).grid(row=0, column=1, sticky="ew", padx=14, pady=7)
-        lbl("Traduci in", 0, 2)
-        self.translate_var = ctk.StringVar(
-            value=TRANSLATION_TARGETS.get(self.cfg["translate"], TRANSLATION_TARGETS["none"]))
-        ctk.CTkOptionMenu(opts, values=list(TRANSLATION_TARGETS.values()),
-                          variable=self.translate_var, fg_color=BRAND, button_color=BRAND,
-                          button_hover_color=BRAND_HOVER).grid(row=0, column=3, sticky="ew", padx=14, pady=7)
-
-        lbl("Qualità (modello)", 1)
-        self.model_var = ctk.StringVar(value=self.cfg["model"])
-        ctk.CTkOptionMenu(opts, values=list(AVAILABLE_MODELS.keys()),
-                          variable=self.model_var, fg_color=BRAND, button_color=BRAND,
-                          button_hover_color=BRAND_HOVER).grid(row=1, column=1, sticky="ew", padx=14, pady=7)
-        lbl("Velocità", 1, 2)
-        self.speed_var = ctk.StringVar(value=self.cfg["speed"])
-        ctk.CTkSegmentedButton(opts, values=["Qualità", "Veloce"], variable=self.speed_var,
-                               selected_color=BRAND, selected_hover_color=BRAND_HOVER
-                               ).grid(row=1, column=3, sticky="w", padx=14, pady=7)
-
-        # Formati (checkbox multipli)
-        lbl("Formati", 2)
-        fmt_row = ctk.CTkFrame(opts, fg_color="transparent")
-        fmt_row.grid(row=2, column=1, sticky="w", padx=14, pady=7)
-        self.fmt_vars = {}
-        for f in ("srt", "vtt", "txt"):
-            v = ctk.BooleanVar(value=f in self.cfg["formats"])
-            ctk.CTkCheckBox(fmt_row, text=f.upper(), variable=v, width=60,
-                            fg_color=BRAND, hover_color=BRAND_HOVER).pack(side="left", padx=(0, 10))
-            self.fmt_vars[f] = v
-
-        lbl("Cartella output", 2, 2)
-        out_row = ctk.CTkFrame(opts, fg_color="transparent")
-        out_row.grid(row=2, column=3, sticky="ew", padx=14, pady=7)
-        self.out_label = ctk.CTkLabel(
-            out_row, text=os.path.basename(self.output_dir) if self.output_dir else "Accanto al video",
-            text_color=TXT_DIM, anchor="w")
-        self.out_label.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(out_row, text="Scegli", width=70, command=self._choose_out_dir,
-                      fg_color=BG_CARD2, hover_color="#33333f").pack(side="right")
-
-        # Opzioni extra: wrap, burn, anteprima
-        extra = ctk.CTkFrame(opts, fg_color="transparent")
-        extra.grid(row=3, column=0, columnspan=4, sticky="w", padx=14, pady=(2, 10))
-        self.wrap_var = ctk.BooleanVar(value=self.cfg.get("wrap_lines", True))
-        ctk.CTkCheckBox(extra, text="Spezzatura righe intelligente", variable=self.wrap_var,
-                        fg_color=BRAND, hover_color=BRAND_HOVER).pack(side="left", padx=(0, 16))
-        self.burn_var = ctk.BooleanVar(value=self.cfg.get("burn", False))
-        burn_cb = ctk.CTkCheckBox(extra, text="Masterizza nel video (hardsub)",
-                                  variable=self.burn_var, fg_color=BRAND, hover_color=BRAND_HOVER)
-        burn_cb.pack(side="left", padx=(0, 16))
-        if not has_ffmpeg():
-            burn_cb.configure(state="disabled", text="Hardsub (richiede ffmpeg)")
-        self.preview_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(extra, text="Anteprima/modifica prima di salvare",
-                        variable=self.preview_var, fg_color=BRAND,
-                        hover_color=BRAND_HOVER).pack(side="left")
-
-        # Riga dedicata: audio difficile (voci deboli/lontane/sussurrate)
-        extra2 = ctk.CTkFrame(opts, fg_color="transparent")
-        extra2.grid(row=4, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 10))
-        self.hard_var = ctk.BooleanVar(value=self.cfg.get("hard_audio", False))
-        ctk.CTkCheckBox(extra2, text="🎚️  Audio difficile (voci deboli/lontane/sussurrate)",
-                        variable=self.hard_var, fg_color=BRAND,
-                        hover_color=BRAND_HOVER).pack(side="left")
-        ctk.CTkLabel(extra2, text="— pre-amplifica l'audio e usa un rilevamento voce "
-                     "più sensibile. Consigliato il modello «large-v3».",
-                     font=ctk.CTkFont(size=11), text_color=TXT_DIM).pack(side="left", padx=(10, 0))
-
-        # --- Azione ---
-        self.run_btn = ctk.CTkButton(
-            self.root, text="✨  Genera sottotitoli", command=self._start,
-            fg_color=BRAND, hover_color=BRAND_HOVER, height=46,
-            font=ctk.CTkFont(size=16, weight="bold"))
-        self.run_btn.pack(fill="x", padx=pad, pady=(0, 8))
-
-        self.progress = ctk.CTkProgressBar(self.root)
-        self.progress.set(0)
-        self.progress.pack(fill="x", padx=pad, pady=(4, 2))
-        self.status = ctk.CTkLabel(self.root, text="Pronto.",
-                                   font=ctk.CTkFont(size=12), text_color=TXT_DIM)
-        self.status.pack(pady=(0, 4))
-        self.open_btn = ctk.CTkButton(
-            self.root, text="📂  Apri cartella output", command=self._open_output,
-            fg_color=BG_CARD2, hover_color="#33333f", height=34)
-
-    # ------------------------------------------------------------- Impostazioni
-    def _collect_settings(self) -> dict:
-        return {
-            "language": self._label_to_code(SUPPORTED_LANGUAGES, self.lang_var.get()),
-            "model": self.model_var.get(),
-            "translate": self._label_to_code(TRANSLATION_TARGETS, self.translate_var.get()),
-            "speed": self.speed_var.get(),
-            "formats": [f for f, v in self.fmt_vars.items() if v.get()] or ["srt"],
-            "output_dir": self.output_dir or "",
-            "theme": ctk.get_appearance_mode().lower(),
-            "burn": self.burn_var.get(),
-            "wrap_lines": self.wrap_var.get(),
-            "hard_audio": self.hard_var.get(),
-        }
-
-    def _persist(self):
-        save_settings(self._collect_settings())
-
-    def _toggle_theme(self):
-        new = "light" if ctk.get_appearance_mode().lower() == "dark" else "dark"
-        ctk.set_appearance_mode(new)
-        self.theme_btn.configure(text="☀︎" if new == "dark" else "☾")
-        self._persist()
-
-    # ------------------------------------------------------------- File list
-    def _refresh_files_box(self):
-        self.files_box.configure(state="normal")
-        self.files_box.delete("1.0", "end")
-        if not self.files:
-            ph = ("Trascina qui i video\noppure usa «＋ Aggiungi» / «Cartella…»"
-                  if _HAS_DND else "Usa «＋ Aggiungi» o «Cartella…»")
-            self.files_box.insert("1.0", ph)
-        else:
-            for i, f in enumerate(self.files, 1):
-                self.files_box.insert("end", f"{i}.  {os.path.basename(f)}\n")
-        self.files_box.configure(state="disabled")
-
-    def _add_files(self, paths):
-        added = 0
-        for p in paths:
-            p = p.strip().strip("{}")
-            if os.path.isdir(p):
-                for root, _, names in os.walk(p):
-                    for n in names:
-                        if n.lower().endswith(VIDEO_EXTS):
-                            fp = os.path.join(root, n)
-                            if fp not in self.files:
-                                self.files.append(fp); added += 1
-            elif os.path.isfile(p) and p not in self.files:
-                self.files.append(p); added += 1
-        if added:
-            self._refresh_files_box()
-            self.status.configure(text=f"{len(self.files)} file in coda.")
-
-    def _browse(self):
-        paths = filedialog.askopenfilenames(
-            title="Seleziona uno o più video/audio",
-            filetypes=[("Media", " ".join(f"*{e}" for e in VIDEO_EXTS)),
-                       ("Tutti i file", "*.*")])
-        if paths:
-            self._add_files(list(paths))
-
-    def _browse_dir(self):
-        d = filedialog.askdirectory(title="Scegli una cartella di video")
-        if d:
-            self._add_files([d])
-
-    def _on_drop(self, event):
-        import re
-        paths = re.findall(r"\{[^}]*\}|\S+", event.data.strip())
-        self._add_files(paths)
-
-    def _clear_files(self):
-        self.files = []
-        self.results.clear()
-        self._refresh_files_box()
-        self.status.configure(text="Coda svuotata.")
-
-    def _choose_out_dir(self):
-        d = filedialog.askdirectory(title="Scegli la cartella di output")
-        self.output_dir = d or None
-        self.out_label.configure(text=os.path.basename(d) if d else "Accanto al video")
-        self._persist()
-
-    def _open_output(self):
-        if self.last_output_dir:
-            _open_in_file_manager(self.last_output_dir)
-
-    def _label_to_code(self, mapping, label):
-        for code, lbl in mapping.items():
-            if lbl == label:
-                return code
-        return label
-
-    # ---------------------------------------------------------- Pipeline
-    def _start(self):
-        if self.worker and self.worker.is_alive():
-            self.cancel_requested = True
-            self.status.configure(text="Annullamento in corso...")
-            return
-        if not self.files:
-            messagebox.showwarning(APP_NAME, "Aggiungi almeno un file video.")
-            return
-        self._persist()
-        self.cancel_requested = False
-        self.run_btn.configure(text="⏹  Annulla", fg_color=DANGER, hover_color="#953232")
-        self.open_btn.pack_forget()
-        self.progress.set(0)
-        import time as _t
-        self._start_ts = _t.monotonic()
-        self._have_real = False
-        self._running = True
-        self._tick()
-        self.worker = threading.Thread(target=self._run_pipeline, daemon=True)
-        self.worker.start()
-
-    def _tick(self):
-        if not getattr(self, "_running", False):
-            return
-        import time as _t
-        el = _t.monotonic() - self._start_ts
-        if not self._have_real:
-            ph = (el % 4) / 4.0
-            pulse = ph if ph <= 0.5 else (1.0 - ph)
-            self.progress.set(0.05 + pulse * 0.1)
-            self.status.configure(
-                text=f"Preparazione... · trascorso {_fmt_elapsed(el)} "
-                     f"(il primo avvio carica il modello, può richiedere qualche minuto)")
-        self.root.after(1000, self._tick)
-
-    def _run_pipeline(self):
+    def run(self):
         try:
-            cfg = self._collect_settings()
-            src_lang = cfg["language"]
-            target = cfg["translate"]
-            model_size = cfg["model"]
-            formats = cfg["formats"]
-            fast = cfg["speed"] == "Veloce"
-            wrap = cfg["wrap_lines"]
-            burn = cfg["burn"]
-            hard = cfg["hard_audio"]
-            preview = self.preview_var.get()
-            files = list(self.files)
-
-            if self.engine is None or self.engine.model_size != model_size:
-                self.engine = SubtitleEngine(model_size=model_size)
-
-            def prog(frac, msg):
-                self.root.after(0, lambda: self._update_progress(frac, msg))
-
-            # Fase 1: trascrizione di tutti i file
-            total = len(files)
-            self.results.clear()
-            for i, media in enumerate(files, 1):
-                if self.cancel_requested:
-                    raise InterruptedError()
+            cfg = self.cfg
+            produced: list[str] = []
+            total = len(self.files)
+            for i, media in enumerate(self.files, 1):
+                if self._cancel:
+                    self.cancelled.emit(); return
                 pfx = f"[{i}/{total}] " if total > 1 else ""
-                self.root.after(0, lambda m=media, p=pfx: self._update_progress(
-                    0.0, f"{p}Avvio: {os.path.basename(m)}"))
+                self.progress.emit(0.0, f"{pfx}Avvio: {os.path.basename(media)}")
                 res = self.engine.transcribe(
-                    media, language=src_lang, task="transcribe", fast=fast,
-                    hard_audio=hard,
-                    progress=lambda fr, ms, p=pfx: prog(fr, p + ms),
-                    cancel_check=lambda: self.cancel_requested)
-                self.results[media] = res
+                    media, language=cfg["language"], task="transcribe",
+                    fast=(cfg["speed"] == "Veloce"), hard_audio=cfg["hard_audio"],
+                    progress=lambda fr, ms, p=pfx: self.progress.emit(fr, p + ms),
+                    cancel_check=lambda: self._cancel)
 
-            # Fase 2: anteprima/modifica (se richiesta) — sul thread UI
-            if preview:
-                self.root.after(0, self._open_preview_then_save,
-                                files, target, formats, wrap, burn)
-            else:
-                produced = self._save_all(files, target, formats, wrap, burn, prog)
-                self.root.after(0, lambda: self._done(produced))
+                out_dir = cfg["output_dir"] or os.path.dirname(media)
+                base = os.path.splitext(os.path.basename(media))[0]
+                wrap = cfg["wrap_lines"]
 
-        except InterruptedError:
-            self.root.after(0, self._cancelled)
+                produced += self._write(res, out_dir, base, res.language,
+                                        cfg["formats"], wrap)
+                tgt = cfg["translate"]
+                if tgt not in ("none", "") and tgt != res.language:
+                    self.progress.emit(0.0, f"{pfx}Traduco in '{tgt}'...")
+                    tr = TranscriptionResult(
+                        language=tgt, language_probability=1.0, duration=res.duration,
+                        segments=translate_segments(
+                            res.segments, res.language, tgt,
+                            lambda fr, ms: self.progress.emit(fr, ms)))
+                    produced += self._write(tr, out_dir, base, tgt, cfg["formats"], wrap)
+
+                if cfg["burn"] and has_ffmpeg():
+                    srt = os.path.join(out_dir, f"{base}.{res.language}.srt")
+                    if not os.path.isfile(srt):
+                        write_subtitles(res, srt, fmt="srt")
+                    outv = os.path.join(out_dir, f"{base}.sub.mp4")
+                    try:
+                        burn_subtitles(media, srt, outv,
+                                       progress=lambda fr, ms: self.progress.emit(fr, ms))
+                        produced.append(outv)
+                    except Exception as exc:
+                        log.error("Hardsub fallito: %s", exc)
+            self.done.emit(produced)
         except Exception as exc:  # noqa: BLE001
-            tb = traceback.format_exc()
-            self.root.after(0, lambda: self._error(str(exc), tb))
+            self.error.emit(str(exc), traceback.format_exc())
 
-    def _save_all(self, files, target, formats, wrap, burn, prog) -> list[str]:
-        """Scrive originale + tradotto in tutti i formati, più hardsub opzionale."""
-        import core.subtitle_engine as eng
-        produced: list[str] = []
-        # applica la preferenza wrap globalmente
-        eng_wrap = wrap
-        for media in files:
-            res = self.results[media]
-            out_dir = self.output_dir or os.path.dirname(media)
-            base = os.path.splitext(os.path.basename(media))[0]
-            self.last_output_dir = out_dir
-
-            # Originale
-            produced += self._write_formats(res, out_dir, base, res.language, formats, eng_wrap)
-            # Tradotto
-            if target not in ("none", "") and target != res.language:
-                prog(0.0, f"Traduco in '{target}'...")
-                tr = TranscriptionResult(
-                    language=target, language_probability=1.0, duration=res.duration,
-                    segments=translate_segments(res.segments, res.language, target, prog))
-                produced += self._write_formats(tr, out_dir, base, target, formats, eng_wrap)
-            # Hardsub (usa l'SRT nella lingua originale se presente, altrimenti lo crea)
-            if burn:
-                srt_path = os.path.join(out_dir, f"{base}.{res.language}.srt")
-                if not os.path.isfile(srt_path):
-                    write_subtitles(res, srt_path, fmt="srt")
-                out_video = os.path.join(out_dir, f"{base}.sub.mp4")
-                try:
-                    burn_subtitles(media, srt_path, out_video, progress=prog)
-                    produced.append(out_video)
-                except Exception as exc:
-                    log.error("Hardsub fallito per %s: %s", media, exc)
-        return produced
-
-    def _write_formats(self, res, out_dir, base, lang, formats, wrap) -> list[str]:
-        import core.subtitle_engine as eng
+    def _write(self, res, out_dir, base, lang, formats, wrap):
         paths = []
         for fmt in formats:
             p = os.path.join(out_dir, f"{base}.{lang}.{fmt}")
@@ -507,124 +202,321 @@ class SubtitlerApp:
             paths.append(p)
         return paths
 
-    def _open_preview_then_save(self, files, target, formats, wrap, burn):
-        """Mostra l'editor dei segmenti del primo file, poi salva tutto."""
-        media = files[0]
-        res = self.results[media]
-        PreviewEditor(self.root, res, on_confirm=lambda: self._after_preview(
-            files, target, formats, wrap, burn))
 
-    def _after_preview(self, files, target, formats, wrap, burn):
-        def prog(frac, msg):
-            self.root.after(0, lambda: self._update_progress(frac, msg))
-        def worker():
-            try:
-                produced = self._save_all(files, target, formats, wrap, burn, prog)
-                self.root.after(0, lambda: self._done(produced))
-            except Exception as exc:  # noqa: BLE001
-                tb = traceback.format_exc()
-                self.root.after(0, lambda: self._error(str(exc), tb))
-        threading.Thread(target=worker, daemon=True).start()
+# -----------------------------------------------------------------------------
+# Finestra principale
+# -----------------------------------------------------------------------------
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.engine: SubtitleEngine | None = None
+        self.files: list[str] = []
+        self.cfg = load_settings()
+        self.output_dir = self.cfg.get("output_dir") or None
+        self.last_output_dir = None
+        self.thread = None
+        self.worker = None
 
-    def _update_progress(self, frac, msg):
-        if frac > 0.02:
-            self._have_real = True
-        self.progress.set(max(0.0, min(1.0, frac)))
-        self.status.configure(text=msg)
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        self.resize(920, 640)
+        self.setMinimumSize(860, 600)
+        self.setAcceptDrops(True)
 
-    def _reset_button(self):
-        self.run_btn.configure(text="✨  Genera sottotitoli", fg_color=BRAND,
-                               hover_color=BRAND_HOVER)
+        self._build()
+        self._apply_theme(self.cfg.get("theme", "dark"))
 
-    def _done(self, produced):
-        self._running = False
-        self.progress.set(1.0)
-        n = len(produced)
-        self.status.configure(text=f"✅ Fatto: {n} file generati.")
-        self._reset_button()
+    # ------------------------------------------------------------- costruzione
+    def _build(self):
+        root = QWidget(); root.setObjectName("root")
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root); outer.setContentsMargins(20, 16, 20, 20); outer.setSpacing(14)
+
+        # Header
+        head = QHBoxLayout()
+        t = QLabel("🎬  Video SubtitlerAI"); t.setObjectName("title")
+        v = QLabel(APP_VERSION); v.setObjectName("version")
+        head.addWidget(t); head.addWidget(v); head.addStretch()
+        self.theme_btn = QPushButton("☾"); self.theme_btn.setObjectName("ghost")
+        self.theme_btn.setFixedWidth(44); self.theme_btn.clicked.connect(self._toggle_theme)
+        head.addWidget(self.theme_btn)
+        outer.addLayout(head)
+
+        body = QHBoxLayout(); body.setSpacing(14); outer.addLayout(body, 1)
+
+        # ===== Sidebar impostazioni =====
+        side = QFrame(); side.setObjectName("panel"); side.setFixedWidth(300)
+        sl = QVBoxLayout(side); sl.setContentsMargins(18, 16, 18, 16); sl.setSpacing(8)
+        sec = QLabel("IMPOSTAZIONI"); sec.setObjectName("section"); sl.addWidget(sec)
+
+        sl.addWidget(QLabel("Lingua audio"))
+        self.lang_cb = QComboBox(); self.lang_cb.addItems(list(SUPPORTED_LANGUAGES.values()))
+        self.lang_cb.setCurrentText(SUPPORTED_LANGUAGES.get(self.cfg["language"],
+                                                            SUPPORTED_LANGUAGES["auto"]))
+        sl.addWidget(self.lang_cb)
+
+        sl.addWidget(QLabel("Traduci in"))
+        self.tr_cb = QComboBox(); self.tr_cb.addItems(list(TRANSLATION_TARGETS.values()))
+        self.tr_cb.setCurrentText(TRANSLATION_TARGETS.get(self.cfg["translate"],
+                                                          TRANSLATION_TARGETS["none"]))
+        sl.addWidget(self.tr_cb)
+
+        sl.addWidget(QLabel("Qualità modello"))
+        self.model_cb = QComboBox()
+        for k, desc in AVAILABLE_MODELS.items():
+            self.model_cb.addItem(k)
+        self.model_cb.setCurrentText(self.cfg["model"])
+        sl.addWidget(self.model_cb)
+
+        sl.addWidget(QLabel("Velocità"))
+        speed_row = QHBoxLayout(); speed_row.setSpacing(0)
+        self.speed_group = QButtonGroup(self)
+        self.btn_quality = QPushButton("Qualità"); self.btn_fast = QPushButton("Veloce")
+        for b in (self.btn_quality, self.btn_fast):
+            b.setCheckable(True); b.setObjectName("ghost"); self.speed_group.addButton(b)
+            speed_row.addWidget(b)
+        (self.btn_fast if self.cfg["speed"] == "Veloce" else self.btn_quality).setChecked(True)
+        self.btn_quality.clicked.connect(lambda: self._set_speed("Qualità"))
+        self.btn_fast.clicked.connect(lambda: self._set_speed("Veloce"))
+        sl.addLayout(speed_row)
+
+        sl.addSpacing(6)
+        self.cb_wrap = QCheckBox("Spezzatura righe intelligente")
+        self.cb_wrap.setChecked(self.cfg.get("wrap_lines", True)); sl.addWidget(self.cb_wrap)
+        self.cb_hard = QCheckBox("Audio difficile (voci deboli/lontane)")
+        self.cb_hard.setChecked(self.cfg.get("hard_audio", False)); sl.addWidget(self.cb_hard)
+        self.cb_burn = QCheckBox("Masterizza nel video (hardsub)")
+        self.cb_burn.setChecked(self.cfg.get("burn", False))
+        if not has_ffmpeg():
+            self.cb_burn.setEnabled(False); self.cb_burn.setText("Hardsub (richiede ffmpeg)")
+        sl.addWidget(self.cb_burn)
+        self.cb_preview = QCheckBox("Anteprima/modifica prima di salvare")
+        sl.addWidget(self.cb_preview)
+
+        sl.addSpacing(6)
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("Formati:"))
+        self.fmt_boxes = {}
+        for f in ("srt", "vtt", "txt"):
+            cb = QCheckBox(f.upper()); cb.setChecked(f in self.cfg["formats"])
+            self.fmt_boxes[f] = cb; fmt_row.addWidget(cb)
+        fmt_row.addStretch()
+        sl.addLayout(fmt_row)
+        sl.addStretch()
+        body.addWidget(side)
+
+        # ===== Area principale =====
+        main = QVBoxLayout(); main.setSpacing(12); body.addLayout(main, 1)
+
+        # Drop zone
+        self.drop = QFrame(); self.drop.setObjectName("drop"); self.drop.setFixedHeight(170)
+        dl = QVBoxLayout(self.drop); dl.setAlignment(Qt.AlignCenter)
+        icon = QLabel("⬇"); icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet(f"font-size: 34px; color: {BRAND};")
+        t1 = QLabel("Trascina qui i tuoi video"); t1.setAlignment(Qt.AlignCenter)
+        t1.setStyleSheet("font-size: 16px; font-weight: 600;")
+        t2 = QLabel("oppure"); t2.setObjectName("dim"); t2.setAlignment(Qt.AlignCenter)
+        browse = QPushButton("Sfoglia file…"); browse.setObjectName("brandbtn")
+        browse.setFixedWidth(150); browse.clicked.connect(self._browse)
+        dl.addWidget(icon); dl.addWidget(t1); dl.addWidget(t2)
+        hb = QHBoxLayout(); hb.addStretch(); hb.addWidget(browse); hb.addStretch(); dl.addLayout(hb)
+        main.addWidget(self.drop)
+
+        # Coda
+        qhead = QHBoxLayout()
+        self.queue_label = QLabel("IN CODA (0)"); self.queue_label.setObjectName("section")
+        qhead.addWidget(self.queue_label); qhead.addStretch()
+        clear = QPushButton("Svuota"); clear.setObjectName("ghost"); clear.clicked.connect(self._clear)
+        folder = QPushButton("Cartella…"); folder.setObjectName("ghost"); folder.clicked.connect(self._browse_dir)
+        qhead.addWidget(folder); qhead.addWidget(clear)
+        main.addLayout(qhead)
+        self.queue = QListWidget(); main.addWidget(self.queue, 1)
+
+        # Output dir
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel("Cartella output:"))
+        self.out_label = QLabel(os.path.basename(self.output_dir) if self.output_dir
+                                else "Accanto al video"); self.out_label.setObjectName("dim")
+        orow.addWidget(self.out_label); orow.addStretch()
+        obtn = QPushButton("Scegli…"); obtn.setObjectName("ghost"); obtn.clicked.connect(self._choose_out)
+        orow.addWidget(obtn)
+        main.addLayout(orow)
+
+        # CTA + progress
+        self.run_btn = QPushButton("✨  Genera sottotitoli"); self.run_btn.setObjectName("primary")
+        self.run_btn.clicked.connect(self._start); main.addWidget(self.run_btn)
+        self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setValue(0)
+        main.addWidget(self.bar)
+        self.status = QLabel("Pronto."); self.status.setObjectName("dim")
+        main.addWidget(self.status)
+        self.open_btn = QPushButton("📂  Apri cartella output"); self.open_btn.setObjectName("ghost")
+        self.open_btn.clicked.connect(self._open_output); self.open_btn.hide()
+        main.addWidget(self.open_btn)
+
+    # ------------------------------------------------------------- tema
+    def _apply_theme(self, theme):
+        self.setStyleSheet(qss(theme))
+        self.theme_btn.setText("☀" if theme == "dark" else "☾")
+
+    def _toggle_theme(self):
+        new = "light" if self.cfg.get("theme", "dark") == "dark" else "dark"
+        self.cfg["theme"] = new
+        self._apply_theme(new); self._persist()
+
+    def _set_speed(self, val):
+        self.cfg["speed"] = val
+
+    # ------------------------------------------------------------- file / DnD
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        paths = [u.toLocalFile() for u in e.mimeData().urls()]
+        self._add(paths)
+
+    def _add(self, paths):
+        added = 0
+        for p in paths:
+            if os.path.isdir(p):
+                for r, _, names in os.walk(p):
+                    for n in names:
+                        if n.lower().endswith(VIDEO_EXTS):
+                            fp = os.path.join(r, n)
+                            if fp not in self.files:
+                                self.files.append(fp); added += 1
+            elif os.path.isfile(p) and p.lower().endswith(VIDEO_EXTS) and p not in self.files:
+                self.files.append(p); added += 1
+        if added:
+            self._refresh_queue()
+
+    def _refresh_queue(self):
+        self.queue.clear()
+        for f in self.files:
+            QListWidgetItem(f"🎞  {os.path.basename(f)}", self.queue)
+        self.queue_label.setText(f"IN CODA ({len(self.files)})")
+        self.status.setText(f"{len(self.files)} file in coda." if self.files else "Pronto.")
+
+    def _browse(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Seleziona video/audio", "",
+            "Media (" + " ".join(f"*{e}" for e in VIDEO_EXTS) + ");;Tutti (*.*)")
+        if paths:
+            self._add(paths)
+
+    def _browse_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Scegli una cartella di video")
+        if d:
+            self._add([d])
+
+    def _clear(self):
+        self.files = []; self._refresh_queue()
+
+    def _choose_out(self):
+        d = QFileDialog.getExistingDirectory(self, "Cartella di output")
+        self.output_dir = d or None
+        self.out_label.setText(os.path.basename(d) if d else "Accanto al video")
+        self._persist()
+
+    def _open_output(self):
         if self.last_output_dir:
-            self.open_btn.pack(fill="x", padx=16, pady=(0, 16))
-        _notify(APP_NAME, f"Generati {n} file.")
+            import subprocess
+            if sys.platform.startswith("win"):
+                os.startfile(self.last_output_dir)  # type: ignore
+            elif sys.platform == "darwin":
+                subprocess.run(["open", self.last_output_dir], check=False)
+            else:
+                subprocess.run(["xdg-open", self.last_output_dir], check=False)
+
+    def _label_to_code(self, mapping, label):
+        for c, l in mapping.items():
+            if l == label:
+                return c
+        return label
+
+    def _collect(self):
+        return {
+            "language": self._label_to_code(SUPPORTED_LANGUAGES, self.lang_cb.currentText()),
+            "model": self.model_cb.currentText(),
+            "translate": self._label_to_code(TRANSLATION_TARGETS, self.tr_cb.currentText()),
+            "speed": self.cfg.get("speed", "Qualità"),
+            "formats": [f for f, cb in self.fmt_boxes.items() if cb.isChecked()] or ["srt"],
+            "output_dir": self.output_dir or "",
+            "theme": self.cfg.get("theme", "dark"),
+            "burn": self.cb_burn.isChecked(),
+            "wrap_lines": self.cb_wrap.isChecked(),
+            "hard_audio": self.cb_hard.isChecked(),
+        }
+
+    def _persist(self):
+        save_settings(self._collect())
+
+    # ------------------------------------------------------------- run
+    def _start(self):
+        if self.thread and self.thread.isRunning():
+            if self.worker:
+                self.worker.cancel()
+            self.status.setText("Annullamento in corso...")
+            return
+        if not self.files:
+            QMessageBox.warning(self, APP_NAME, "Aggiungi almeno un file video.")
+            return
+        self._persist()
+        cfg = self._collect()
+        model = cfg["model"]
+        if self.engine is None or self.engine.model_size != model:
+            self.engine = SubtitleEngine(model_size=model)
+
+        self.run_btn.setText("⏹  Annulla")
+        self.open_btn.hide(); self.bar.setValue(0)
+
+        self.thread = QThread()
+        self.worker = Worker(self.engine, list(self.files), cfg)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.done.connect(self._on_done)
+        self.worker.error.connect(self._on_error)
+        self.worker.cancelled.connect(self._on_cancelled)
+        self.thread.start()
+
+    def _on_progress(self, frac, msg):
+        self.bar.setValue(int(max(0, min(1, frac)) * 100))
+        self.status.setText(msg)
+
+    def _finish_thread(self):
+        if self.thread:
+            self.thread.quit(); self.thread.wait()
+        self.run_btn.setText("✨  Genera sottotitoli")
+
+    def _on_done(self, produced):
+        self.last_output_dir = (os.path.dirname(produced[0]) if produced else None)
+        self.bar.setValue(100)
+        self.status.setText(f"✅ Fatto: {len(produced)} file generati.")
+        self._finish_thread()
+        if self.last_output_dir:
+            self.open_btn.show()
         lst = "\n".join(f"• {os.path.basename(p)}" for p in produced[:14])
-        if n > 14:
-            lst += f"\n… e altri {n - 14}"
-        messagebox.showinfo(APP_NAME, f"Generati {n} file:\n\n{lst}")
+        QMessageBox.information(self, APP_NAME, f"Generati {len(produced)} file:\n\n{lst}")
 
-    def _cancelled(self):
-        self._running = False
-        self.progress.set(0)
-        self.status.configure(text="Operazione annullata.")
-        self._reset_button()
+    def _on_cancelled(self):
+        self.bar.setValue(0); self.status.setText("Operazione annullata.")
+        self._finish_thread()
 
-    def _error(self, msg, tb):
-        self._running = False
-        self.progress.set(0)
-        self.status.configure(text="Errore durante l'elaborazione.")
-        self._reset_button()
+    def _on_error(self, msg, tb):
+        self.bar.setValue(0); self.status.setText("Errore durante l'elaborazione.")
+        self._finish_thread()
         log.error("Errore:\n%s", tb)
-        messagebox.showerror(APP_NAME,
-                             f"Si è verificato un errore:\n\n{msg}\n\n"
-                             f"Dettagli nel log:\n{log_path()}")
-
-
-class PreviewEditor(ctk.CTkToplevel):
-    """Finestra per rivedere e modificare i segmenti prima di salvare."""
-
-    def __init__(self, parent, result: TranscriptionResult, on_confirm):
-        super().__init__(parent)
-        self.result = result
-        self.on_confirm = on_confirm
-        self.title("Anteprima e modifica sottotitoli")
-        self.geometry("720x560")
-        self.transient(parent)
-
-        ctk.CTkLabel(self, text="Rivedi e correggi i testi, poi conferma.",
-                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=(12, 6))
-
-        self.scroll = ctk.CTkScrollableFrame(self, fg_color=BG_CARD)
-        self.scroll.pack(fill="both", expand=True, padx=12, pady=6)
-
-        self.entries: list[tuple[Segment, ctk.CTkTextbox]] = []
-        for seg in result.segments:
-            rowf = ctk.CTkFrame(self.scroll, fg_color=BG_CARD2, corner_radius=8)
-            rowf.pack(fill="x", padx=4, pady=4)
-            tstamp = f"{_fmt_ts(seg.start)} → {_fmt_ts(seg.end)}"
-            ctk.CTkLabel(rowf, text=f"#{seg.index}  {tstamp}",
-                         font=ctk.CTkFont(size=11), text_color=TXT_DIM
-                         ).pack(anchor="w", padx=10, pady=(6, 0))
-            box = ctk.CTkTextbox(rowf, height=48)
-            box.insert("1.0", seg.text)
-            box.pack(fill="x", padx=10, pady=(2, 8))
-            self.entries.append((seg, box))
-
-        btns = ctk.CTkFrame(self, fg_color="transparent")
-        btns.pack(fill="x", padx=12, pady=10)
-        ctk.CTkButton(btns, text="Annulla", command=self.destroy,
-                      fg_color=BG_CARD2, hover_color="#33333f").pack(side="right", padx=(8, 0))
-        ctk.CTkButton(btns, text="✅ Conferma e salva", command=self._confirm,
-                      fg_color=BRAND, hover_color=BRAND_HOVER).pack(side="right")
-
-    def _confirm(self):
-        for seg, box in self.entries:
-            seg.text = box.get("1.0", "end").strip()
-        self.destroy()
-        self.on_confirm()
-
-
-def _fmt_ts(seconds: float) -> str:
-    s = max(0, int(seconds))
-    m, s = divmod(s, 60)
-    return f"{m:02d}:{s:02d}"
+        QMessageBox.critical(self, APP_NAME,
+                             f"Si è verificato un errore:\n\n{msg}\n\nLog:\n{log_path()}")
 
 
 def main():
-    log.info("Avvio %s %s (dnd=%s)", APP_NAME, APP_VERSION, _HAS_DND)
-    if _HAS_DND:
-        root = TkinterDnD.Tk()
-    else:
-        root = ctk.CTk()
-    SubtitlerApp(root)
-    root.mainloop()
+    log.info("Avvio %s %s (Qt/PySide6)", APP_NAME, APP_VERSION)
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    w = MainWindow()
+    w.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

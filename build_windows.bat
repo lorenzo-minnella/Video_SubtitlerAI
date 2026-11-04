@@ -14,7 +14,7 @@ REM vengono sempre trovati, a prescindere da dove parte il doppio clic.
 cd /d "%~dp0"
 
 set APPNAME=VideoSubtitlerAI
-set VERSION=3.2
+set VERSION=3.3
 
 REM Controllo di sicurezza: i file del progetto devono essere qui accanto.
 if not exist "requirements.txt" (
@@ -67,11 +67,9 @@ pyinstaller --noconfirm --clean ^
   --windowed ^
   --onedir ^
   %ICONOPT% ^
-  --collect-all customtkinter ^
   --collect-all faster_whisper ^
   --collect-all av ^
   --collect-all ctranslate2 ^
-  --collect-all tkinterdnd2 ^
   --collect-all argostranslate ^
   --collect-all certifi ^
   --add-data "assets;assets" ^
