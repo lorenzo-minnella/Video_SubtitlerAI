@@ -386,6 +386,7 @@ class SubtitleEngine:
         language: str = "auto",
         task: str = "transcribe",
         fast: bool = False,
+        hard_audio: bool = False,
         progress: Optional[Callable[[float, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> TranscriptionResult:
@@ -421,16 +422,45 @@ class SubtitleEngine:
         # Parametri: in modalità "fast" usiamo greedy (beam_size=1) che su CPU è
         # sensibilmente più veloce; altrimenti beam search per qualità migliore.
         beam = 1 if fast else 5
-        segments_iter, info = model.transcribe(
-            media_path,
+
+        # Input per Whisper: path diretto, oppure audio PRE-AMPLIFICATO (ndarray)
+        # per il parlato debole/lontano.
+        audio_input = media_path
+        if hard_audio:
+            try:
+                audio_input = _load_audio_boosted(media_path)
+                log.info("Audio difficile: pre-amplificazione applicata.")
+            except Exception as exc:
+                log.warning("Pre-amplificazione non riuscita (%s): uso l'audio originale.", exc)
+                audio_input = media_path
+
+        # VAD: in modalità "audio difficile" soglia bassa (sensibile ai suoni deboli)
+        # e silenzio minimo più lungo, così le voci sussurrate non vengono scartate.
+        if hard_audio:
+            vad_params = dict(threshold=0.2, min_silence_duration_ms=700,
+                              speech_pad_ms=400)
+            no_speech_thr = 0.35   # non scartare facilmente segmenti a basso volume
+            cond_prev = True       # più contesto aiuta sul parlato difficile
+        else:
+            vad_params = None
+            no_speech_thr = 0.6
+            cond_prev = False      # evita loop di ripetizioni, più stabile
+
+        tr_kwargs = dict(
             language=lang_arg,
             task=task,
-            vad_filter=True,  # rimuove silenzi lunghi -> segmenti più puliti
+            vad_filter=True,
             beam_size=beam,
-            condition_on_previous_text=False,  # evita loop di ripetizioni, più stabile
-            word_timestamps=True,  # tempi parola per parola (per split preciso)
+            condition_on_previous_text=cond_prev,
+            word_timestamps=True,
+            no_speech_threshold=no_speech_thr,
         )
-        log.info("Parametri: beam_size=%d, fast=%s, word_timestamps=True", beam, fast)
+        if vad_params:
+            tr_kwargs["vad_parameters"] = vad_params
+
+        segments_iter, info = model.transcribe(audio_input, **tr_kwargs)
+        log.info("Parametri: beam_size=%d, fast=%s, hard_audio=%s, word_timestamps=True",
+                 beam, fast, hard_audio)
 
         duration = float(getattr(info, "duration", 0.0) or 0.0)
         result = TranscriptionResult(
@@ -608,6 +638,47 @@ def has_ffmpeg() -> bool:
     """True se un eseguibile ffmpeg è disponibile (per l'hardsub)."""
     import shutil
     return shutil.which("ffmpeg") is not None
+
+
+def _load_audio_boosted(media_path: str, target_sr: int = 16000):
+    """
+    Decodifica l'audio del file con PyAV (nessun ffmpeg esterno), lo porta a
+    16 kHz mono float32 e applica normalizzazione + boost. Serve per rendere
+    udibili al modello le voci deboli/lontane/sussurrate.
+
+    Ritorna un numpy.ndarray float32 mono a 16 kHz (formato atteso da Whisper).
+    """
+    import av
+    import numpy as np
+
+    container = av.open(media_path)
+    try:
+        stream = next(s for s in container.streams if s.type == "audio")
+    except StopIteration:
+        raise RuntimeError("Nessuna traccia audio nel file.")
+
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16", layout="mono", rate=target_sr)
+
+    chunks: list[np.ndarray] = []
+    for frame in container.decode(stream):
+        for rframe in resampler.resample(frame):
+            arr = rframe.to_ndarray().reshape(-1)
+            chunks.append(arr)
+    container.close()
+
+    if not chunks:
+        raise RuntimeError("Audio vuoto dopo la decodifica.")
+
+    audio = np.concatenate(chunks).astype(np.float32) / 32768.0  # s16 -> [-1, 1]
+
+    # Normalizzazione di picco al 95% per non distorcere, con guadagno massimo 8x
+    # (così le voci lontane salgono senza saturare i rumori forti).
+    peak = float(np.max(np.abs(audio))) or 1.0
+    gain = min(8.0, 0.95 / peak)
+    audio = np.clip(audio * gain, -1.0, 1.0)
+    log.info("Pre-amplificazione: picco %.3f -> guadagno %.2fx", peak, gain)
+    return audio
 
 
 def burn_subtitles(video_path: str, srt_path: str, output_path: str,
