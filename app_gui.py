@@ -51,7 +51,7 @@ except ImportError:
 log = get_logger()
 
 APP_NAME = "Video SubtitlerAI"
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg")
@@ -130,7 +130,7 @@ class Worker(QObject):
     error = Signal(str, str)
     cancelled = Signal()
 
-    def __init__(self, engine, files, cfg, preview_cb=None):
+    def __init__(self, engine, files, cfg):
         super().__init__()
         self.engine = engine
         self.files = files
@@ -289,9 +289,6 @@ class MainWindow(QMainWindow):
         if not has_ffmpeg():
             self.cb_burn.setEnabled(False); self.cb_burn.setText("Hardsub (richiede ffmpeg)")
         sl.addWidget(self.cb_burn)
-        self.cb_preview = QCheckBox("Anteprima/modifica prima di salvare")
-        sl.addWidget(self.cb_preview)
-
         sl.addSpacing(6)
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(QLabel("Formati:"))

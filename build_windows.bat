@@ -14,7 +14,7 @@ REM vengono sempre trovati, a prescindere da dove parte il doppio clic.
 cd /d "%~dp0"
 
 set APPNAME=VideoSubtitlerAI
-set VERSION=3.3
+set VERSION=3.4
 
 REM Controllo di sicurezza: i file del progetto devono essere qui accanto.
 if not exist "requirements.txt" (

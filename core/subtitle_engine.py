@@ -439,13 +439,18 @@ class SubtitleEngine:
         # IMPORTANTE: condition_on_previous_text resta SEMPRE False. Su audio lungo
         # con True gli offset dei timestamp si accumulano e la trascrizione si
         # interrompe a metà senza errore (bug noto, peggiore sui modelli distil).
+        # Il VAD rileva il PARLATO: se non lo riconosce, quel tratto viene PERSO
+        # (buchi nei sottotitoli). Per questo usiamo SEMPRE parametri prudenti —
+        # soglia bassa e silenzio minimo lungo — così pause brevi, musica e voci
+        # deboli non vengono scartate. In "audio difficile" è ancora più permissivo.
         if hard_audio:
-            vad_params = dict(threshold=0.2, min_silence_duration_ms=700,
-                              speech_pad_ms=400)
-            no_speech_thr = 0.35   # non scartare facilmente segmenti a basso volume
+            vad_params = dict(threshold=0.2, min_silence_duration_ms=1500,
+                              speech_pad_ms=600)
+            no_speech_thr = 0.30
         else:
-            vad_params = None
-            no_speech_thr = 0.6
+            vad_params = dict(threshold=0.3, min_silence_duration_ms=1500,
+                              speech_pad_ms=400)
+            no_speech_thr = 0.5
         cond_prev = False          # sempre False: evita accumulo timestamp e loop
 
         tr_kwargs = dict(
@@ -491,11 +496,12 @@ class SubtitleEngine:
                 continue
             seg_start = float(seg.start)
             seg_end = float(seg.end)
-            # Guardia anti-timestamp-degeneri: se i tempi tornano indietro o sono
-            # incoerenti, non far collassare il resto; logga e salta il segmento.
-            if seg_end < seg_start or seg_start + 0.01 < last_audio_pos - 30.0:
-                log.warning("Segmento con timestamp anomali (start=%.1f end=%.1f, "
-                            "pos=%.1f): lo salto.", seg_start, seg_end, last_audio_pos)
+            # Guardia MINIMA: scarta solo i segmenti davvero degeneri (fine prima
+            # dell'inizio). NON scartiamo per salti all'indietro: su audio reale
+            # piccole sovrapposizioni sono normali e scartarle creava buchi.
+            if seg_end < seg_start:
+                log.warning("Segmento con tempi invertiti (start=%.1f end=%.1f): "
+                            "lo salto.", seg_start, seg_end)
                 continue
             words = []
             for w in (getattr(seg, "words", None) or []):
