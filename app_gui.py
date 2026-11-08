@@ -51,7 +51,7 @@ except ImportError:
 log = get_logger()
 
 APP_NAME = "Video SubtitlerAI"
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v",
               ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg")
@@ -99,6 +99,13 @@ def qss(theme: str) -> str:
         border-radius: 9px; padding: 8px 14px; font-size: 13px;
     }}
     QPushButton#ghost:hover {{ background: {border}; }}
+    QPushButton#seg {{
+        background: {card}; color: {text}; border: 1px solid {border};
+        padding: 8px 14px; font-size: 13px;
+    }}
+    QPushButton#seg:checked {{ background: {BRAND}; color: white; border: 1px solid {BRAND}; }}
+    QPushButton#seg:hover {{ background: {border}; }}
+    QPushButton#seg:checked:hover {{ background: #6a5ae0; }}
     QPushButton#brandbtn {{
         background: {BRAND}; color: white; border: 0; border-radius: 9px;
         padding: 9px 16px; font-size: 13px; font-weight: 600;
@@ -144,6 +151,7 @@ class Worker(QObject):
         try:
             cfg = self.cfg
             produced: list[str] = []
+            self._used_paths: set[str] = set()  # anti-sovrascrittura in batch
             total = len(self.files)
             for i, media in enumerate(self.files, 1):
                 if self._cancel:
@@ -162,6 +170,8 @@ class Worker(QObject):
 
                 produced += self._write(res, out_dir, base, res.language,
                                         cfg["formats"], wrap)
+                if self._cancel:
+                    self.cancelled.emit(); return
                 tgt = cfg["translate"]
                 if tgt not in ("none", "") and tgt != res.language:
                     self.progress.emit(0.0, f"{pfx}Traduco in '{tgt}'...")
@@ -169,13 +179,16 @@ class Worker(QObject):
                         language=tgt, language_probability=1.0, duration=res.duration,
                         segments=translate_segments(
                             res.segments, res.language, tgt,
-                            lambda fr, ms: self.progress.emit(fr, ms)))
+                            lambda fr, ms: self.progress.emit(fr, ms),
+                            cancel_check=lambda: self._cancel))
                     produced += self._write(tr, out_dir, base, tgt, cfg["formats"], wrap)
 
+                if self._cancel:
+                    self.cancelled.emit(); return
                 if cfg["burn"] and has_ffmpeg():
                     srt = os.path.join(out_dir, f"{base}.{res.language}.srt")
                     if not os.path.isfile(srt):
-                        write_subtitles(res, srt, fmt="srt")
+                        write_subtitles(res, srt, fmt="srt", wrap=wrap)
                     outv = os.path.join(out_dir, f"{base}.sub.mp4")
                     try:
                         burn_subtitles(media, srt, outv,
@@ -184,13 +197,33 @@ class Worker(QObject):
                     except Exception as exc:
                         log.error("Hardsub fallito: %s", exc)
             self.done.emit(produced)
+        except InterruptedError:
+            self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc), traceback.format_exc())
 
+    def _unique_path(self, path: str) -> str:
+        """Evita di sovrascrivere un file già prodotto in questo run (utile in
+        batch con file omonimi in cartelle diverse e output comune)."""
+        if path not in getattr(self, "_used_paths", set()):
+            self._used_paths.add(path)
+            return path
+        root, ext = os.path.splitext(path)
+        n = 2
+        while f"{root} ({n}){ext}" in self._used_paths:
+            n += 1
+        p = f"{root} ({n}){ext}"
+        self._used_paths.add(p)
+        return p
+
     def _write(self, res, out_dir, base, lang, formats, wrap):
+        if not res.segments:
+            log.warning("Nessun segmento per %s: non scrivo file vuoti.", base)
+            return []
+        os.makedirs(out_dir, exist_ok=True)  # la cartella output potrebbe non esistere
         paths = []
         for fmt in formats:
-            p = os.path.join(out_dir, f"{base}.{lang}.{fmt}")
+            p = self._unique_path(os.path.join(out_dir, f"{base}.{lang}.{fmt}"))
             if fmt == "srt":
                 content = eng.segments_to_srt(res.segments, wrap=wrap)
             elif fmt == "vtt":
@@ -263,8 +296,10 @@ class MainWindow(QMainWindow):
         sl.addWidget(QLabel("Qualità modello"))
         self.model_cb = QComboBox()
         for k, desc in AVAILABLE_MODELS.items():
-            self.model_cb.addItem(k)
-        self.model_cb.setCurrentText(self.cfg["model"])
+            self.model_cb.addItem(f"{k} — {desc}", userData=k)
+        # Seleziona il modello salvato tramite la sua chiave (userData).
+        saved_idx = self.model_cb.findData(self.cfg["model"])
+        self.model_cb.setCurrentIndex(saved_idx if saved_idx >= 0 else 0)
         sl.addWidget(self.model_cb)
 
         sl.addWidget(QLabel("Velocità"))
@@ -272,7 +307,7 @@ class MainWindow(QMainWindow):
         self.speed_group = QButtonGroup(self)
         self.btn_quality = QPushButton("Qualità"); self.btn_fast = QPushButton("Veloce")
         for b in (self.btn_quality, self.btn_fast):
-            b.setCheckable(True); b.setObjectName("ghost"); self.speed_group.addButton(b)
+            b.setCheckable(True); b.setObjectName("seg"); self.speed_group.addButton(b)
             speed_row.addWidget(b)
         (self.btn_fast if self.cfg["speed"] == "Veloce" else self.btn_quality).setChecked(True)
         self.btn_quality.clicked.connect(lambda: self._set_speed("Qualità"))
@@ -361,6 +396,7 @@ class MainWindow(QMainWindow):
 
     def _set_speed(self, val):
         self.cfg["speed"] = val
+        self._persist()
 
     # ------------------------------------------------------------- file / DnD
     def dragEnterEvent(self, e):
@@ -433,7 +469,7 @@ class MainWindow(QMainWindow):
     def _collect(self):
         return {
             "language": self._label_to_code(SUPPORTED_LANGUAGES, self.lang_cb.currentText()),
-            "model": self.model_cb.currentText(),
+            "model": self.model_cb.currentData() or "small",
             "translate": self._label_to_code(TRANSLATION_TARGETS, self.tr_cb.currentText()),
             "speed": self.cfg.get("speed", "Qualità"),
             "formats": [f for f, cb in self.fmt_boxes.items() if cb.isChecked()] or ["srt"],
@@ -482,14 +518,28 @@ class MainWindow(QMainWindow):
 
     def _finish_thread(self):
         if self.thread:
-            self.thread.quit(); self.thread.wait()
+            self.thread.quit()
+            self.thread.wait()
+            self.thread.deleteLater()
+        if self.worker:
+            self.worker.deleteLater()
+        self.thread = None
+        self.worker = None
         self.run_btn.setText("✨  Genera sottotitoli")
 
     def _on_done(self, produced):
         self.last_output_dir = (os.path.dirname(produced[0]) if produced else None)
         self.bar.setValue(100)
-        self.status.setText(f"✅ Fatto: {len(produced)} file generati.")
         self._finish_thread()
+        if not produced:
+            self.status.setText("Nessun sottotitolo prodotto.")
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Non è stato prodotto alcun sottotitolo.\n\n"
+                "Il file potrebbe non contenere parlato rilevabile. Prova ad "
+                "attivare «Audio difficile» o a impostare la lingua manualmente.")
+            return
+        self.status.setText(f"✅ Fatto: {len(produced)} file generati.")
         if self.last_output_dir:
             self.open_btn.show()
         lst = "\n".join(f"• {os.path.basename(p)}" for p in produced[:14])
@@ -505,6 +555,18 @@ class MainWindow(QMainWindow):
         log.error("Errore:\n%s", tb)
         QMessageBox.critical(self, APP_NAME,
                              f"Si è verificato un errore:\n\n{msg}\n\nLog:\n{log_path()}")
+
+    def closeEvent(self, event):
+        """Alla chiusura, interrompe un eventuale lavoro in corso e attende il
+        thread, per evitare crash/processi zombie se si chiude durante l'opera."""
+        if self.thread and self.thread.isRunning():
+            if self.worker:
+                self.worker.cancel()
+            self.thread.quit()
+            if not self.thread.wait(5000):   # max 5s, poi forza
+                self.thread.terminate()
+                self.thread.wait()
+        event.accept()
 
 
 def main():

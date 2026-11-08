@@ -23,13 +23,25 @@ _CONFIGURED = False
 
 def _log_dir() -> str:
     """
-    Cartella dove scrivere il log.
-    - Da sorgente: la cartella del progetto.
-    - Da eseguibile PyInstaller: la cartella che contiene l'.exe.
+    Cartella dove scrivere il log. Usa la cartella dati utente dell'app, che è
+    SEMPRE scrivibile (la cartella dell'exe può essere in Programmi, in sola
+    lettura). Se per qualche motivo non è creabile, ripiega sulla cartella
+    dell'exe/progetto.
     """
-    if getattr(sys, "frozen", False):  # bundle PyInstaller
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        if os.name == "nt":
+            base = os.environ.get("APPDATA", os.path.expanduser("~"))
+        elif sys.platform == "darwin":
+            base = os.path.expanduser("~/Library/Application Support")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        d = os.path.join(base, "VideoSubtitlerAI")
+        os.makedirs(d, exist_ok=True)
+        return d
+    except Exception:
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def get_logger() -> logging.Logger:
@@ -46,11 +58,13 @@ def get_logger() -> logging.Logger:
         "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # Console
-    console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.INFO)
-    console.setFormatter(fmt)
-    logger.addHandler(console)
+    # Console — solo se stderr esiste. In modalità GUI --windowed su Windows
+    # sys.stderr può essere None e StreamHandler(None) andrebbe in errore.
+    if sys.stderr is not None:
+        console = logging.StreamHandler(sys.stderr)
+        console.setLevel(logging.INFO)
+        console.setFormatter(fmt)
+        logger.addHandler(console)
 
     # File (rotazione a 1 MB, 3 backup)
     try:

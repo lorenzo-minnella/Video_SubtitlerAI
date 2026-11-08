@@ -35,6 +35,10 @@ def _progress(frac: float, msg: str):
 
 
 def _write(res, out_dir, base, lang, formats, wrap):
+    if not res.segments:
+        return []
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     produced = []
     for fmt in formats:
         p = os.path.join(out_dir, f"{base}.{lang}.{fmt}")
@@ -80,16 +84,30 @@ def main(argv=None):
     wrap = not args.no_wrap
     engine = SubtitleEngine(model_size=args.model)
 
+    had_error = False
     for media in args.inputs:
         if not os.path.isfile(media):
             print(f"⚠️  File non trovato: {media}", file=sys.stderr)
             continue
         print(f"\n🎬  {os.path.basename(media)}")
-        res = engine.transcribe(media, language=args.language, task="transcribe",
-                                fast=args.fast, hard_audio=args.hard_audio,
-                                progress=_progress)
+        try:
+            res = engine.transcribe(media, language=args.language, task="transcribe",
+                                    fast=args.fast, hard_audio=args.hard_audio,
+                                    progress=_progress)
+        except KeyboardInterrupt:
+            print("\nInterrotto.", file=sys.stderr); return 1
+        except Exception as exc:  # un file problematico non blocca il batch
+            print(f"   ❌  Errore su {os.path.basename(media)}: {exc}", file=sys.stderr)
+            log.error("Errore su %s: %s", media, exc)
+            had_error = True
+            continue
+
         print(f"   Lingua rilevata: {res.language} "
               f"(confidenza {res.language_probability:.0%}) · {len(res.segments)} segmenti")
+
+        if not res.segments:
+            print("   ⚠️  Nessun parlato rilevato: nessun file prodotto.", file=sys.stderr)
+            continue
 
         out_dir = args.output_dir or os.path.dirname(media)
         base = os.path.splitext(os.path.basename(media))[0]
@@ -99,12 +117,16 @@ def main(argv=None):
 
         if args.translate not in ("none", "") and args.translate != res.language:
             print(f"   Traduco in '{args.translate}'...")
-            tr = TranscriptionResult(
-                language=args.translate, language_probability=1.0, duration=res.duration,
-                segments=translate_segments(res.segments, res.language,
-                                            args.translate, _progress))
-            for p in _write(tr, out_dir, base, args.translate, args.format, wrap):
-                print(f"   ✅  {p}")
+            try:
+                tr = TranscriptionResult(
+                    language=args.translate, language_probability=1.0, duration=res.duration,
+                    segments=translate_segments(res.segments, res.language,
+                                                args.translate, _progress))
+                for p in _write(tr, out_dir, base, args.translate, args.format, wrap):
+                    print(f"   ✅  {p}")
+            except Exception as exc:
+                print(f"   ⚠️  Traduzione non riuscita: {exc}", file=sys.stderr)
+                had_error = True
 
         if args.burn:
             if not has_ffmpeg():
@@ -112,11 +134,17 @@ def main(argv=None):
             else:
                 srt_path = os.path.join(out_dir, f"{base}.{res.language}.srt")
                 if not os.path.isfile(srt_path):
-                    write_subtitles(res, srt_path, fmt="srt")
+                    write_subtitles(res, srt_path, fmt="srt", wrap=wrap)
                 out_video = os.path.join(out_dir, f"{base}.sub.mp4")
-                burn_subtitles(media, srt_path, out_video, progress=_progress)
-                print(f"   ✅  {out_video}")
+                try:
+                    burn_subtitles(media, srt_path, out_video, progress=_progress)
+                    print(f"   ✅  {out_video}")
+                except Exception as exc:
+                    print(f"   ⚠️  Hardsub non riuscito: {exc}", file=sys.stderr)
+                    had_error = True
+
+    return 1 if had_error else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

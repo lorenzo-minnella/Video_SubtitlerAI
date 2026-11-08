@@ -14,7 +14,7 @@ REM vengono sempre trovati, a prescindere da dove parte il doppio clic.
 cd /d "%~dp0"
 
 set APPNAME=VideoSubtitlerAI
-set VERSION=3.4
+set VERSION=3.5
 
 REM Controllo di sicurezza: i file del progetto devono essere qui accanto.
 if not exist "requirements.txt" (
@@ -52,8 +52,9 @@ call .venv\Scripts\activate.bat
 echo [2/5] Installo le dipendenze...
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-REM Pillow + cairosvg servono solo per generare l'icona .ico (facoltativo)
-pip install pillow cairosvg
+REM Pillow serve solo per generare l'icona .ico (make_ico.py la disegna con Pillow,
+REM senza cairosvg che su Windows non funziona).
+pip install pillow
 
 echo [3/5] Genero l'icona .ico dal sorgente SVG (se disponibile)...
 python tools\make_ico.py

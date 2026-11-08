@@ -146,18 +146,22 @@ def _wrap_text(text: str, max_chars: int = MAX_CHARS_PER_LINE,
     words = text.split(" ")
     lines: list[str] = []
     current = ""
-    for w in words:
+    i = 0
+    n = len(words)
+    while i < n:
+        w = words[i]
         candidate = f"{current} {w}".strip()
         if len(candidate) <= max_chars or not current:
             current = candidate
+            i += 1
         else:
             lines.append(current)
-            current = w
+            current = ""
             if len(lines) == max_lines - 1:
-                # Ultima riga: ci mettiamo tutto il resto
-                rest = w
-                idx = words.index(w) + 1
-                current = " ".join([rest] + words[idx:])
+                # Ultima riga: tutto il resto a partire dalla parola corrente.
+                # Uso l'indice i (non words.index) per gestire parole ripetute.
+                current = " ".join(words[i:])
+                i = n
                 break
     if current:
         lines.append(current)
@@ -200,6 +204,7 @@ def translate_segments(
     source_lang: str,
     target_lang: str,
     progress: Optional[Callable[[float, str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> list[Segment]:
     """
     Traduce il testo dei segmenti da source_lang a target_lang usando Argos
@@ -228,13 +233,23 @@ def translate_segments(
             f"Coppia di traduzione {source_lang}->{target_lang} non disponibile."
         )
     translation = from_lang.get_translation(to_lang)
+    if translation is None:
+        # Le lingue sono installate ma non esiste una traduzione diretta tra loro.
+        raise RuntimeError(
+            f"Nessuna traduzione diretta {source_lang}->{target_lang} disponibile. "
+            "Alcune coppie passano dall'inglese: prova a installare anche il "
+            "pacchetto intermedio, oppure traduci verso/da l'inglese."
+        )
 
     total = len(segments) or 1
     out: list[Segment] = []
     for i, seg in enumerate(segments):
+        if cancel_check and cancel_check():
+            raise InterruptedError("Traduzione annullata dall'utente.")
         translated_text = translation.translate(seg.text.strip())
         out.append(
-            Segment(index=seg.index, start=seg.start, end=seg.end, text=translated_text)
+            Segment(index=seg.index, start=seg.start, end=seg.end,
+                    text=translated_text, words=seg.words)
         )
         if progress:
             progress((i + 1) / total, f"Traduzione {i + 1}/{total}")
@@ -251,11 +266,17 @@ def _ensure_argos_package(
     import argostranslate.translate
 
     installed = argostranslate.translate.get_installed_languages()
-    # Verifica che entrambe le lingue della coppia siano installate.
-    from_ok = any(l.code == source_lang for l in installed)
-    to_ok = any(l.code == target_lang for l in installed)
-    if from_ok and to_ok:
-        return
+    # Verifica che esista già una traduzione DIRETTA source->target installata,
+    # non solo che le due lingue siano presenti (non basta: potrebbe mancare la
+    # coppia). Se c'è, non serve scaricare nulla.
+    from_lang = next((l for l in installed if l.code == source_lang), None)
+    to_lang = next((l for l in installed if l.code == target_lang), None)
+    if from_lang is not None and to_lang is not None:
+        try:
+            if from_lang.get_translation(to_lang) is not None:
+                return
+        except Exception:
+            pass  # nel dubbio, proviamo a scaricare la coppia
 
     if progress:
         progress(0.0, "Scarico pacchetto di traduzione...")
@@ -546,6 +567,10 @@ class SubtitleEngine:
         before = len(result.segments)
         result.segments = resegment(result.segments)
         log.info("Ri-segmentazione: %d -> %d segmenti.", before, len(result.segments))
+        if not result.segments:
+            log.warning("Nessun segmento prodotto: il file potrebbe non contenere "
+                        "parlato rilevabile, o il VAD ha scartato tutto. Prova la "
+                        "modalità 'Audio difficile' o una lingua esplicita.")
 
         if progress:
             progress(1.0, f"Trascrizione completata in {_fmt_duration(total_elapsed)}.")
@@ -624,20 +649,25 @@ def _merge_tiny(segments: list[Segment]) -> list[Segment]:
 
 def _chunk_to_segment(words: list[Word]) -> Segment:
     text = " ".join(w.text for w in words).strip()
-    return Segment(index=0, start=words[0].start, end=words[-1].end,
-                   text=text, words=list(words))
+    # I word-timestamp a volte non sono monotòni: calcolo start/end robusti come
+    # min/max, così il segmento non finisce mai con end < start.
+    start = min(w.start for w in words)
+    end = max(w.end for w in words)
+    if end < start:
+        end = start
+    return Segment(index=0, start=start, end=end, text=text, words=list(words))
 
 
 def write_subtitles(result: TranscriptionResult, output_path: str,
-                    fmt: str = "srt") -> str:
+                    fmt: str = "srt", wrap: bool = True) -> str:
     """Scrive i segmenti su file nel formato richiesto ('srt', 'vtt' o 'txt')."""
     fmt = fmt.lower()
     if fmt == "vtt":
-        content = segments_to_vtt(result.segments)
+        content = segments_to_vtt(result.segments, wrap=wrap)
     elif fmt == "txt":
         content = segments_to_text(result.segments)
     else:
-        content = segments_to_srt(result.segments)
+        content = segments_to_srt(result.segments, wrap=wrap)
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.write(content)
     return output_path
@@ -655,10 +685,29 @@ def write_subtitles_multi(result: TranscriptionResult, out_dir: str, base: str,
     return paths
 
 
+def _ffmpeg_path() -> Optional[str]:
+    """
+    Trova un eseguibile ffmpeg: prima accanto all'app/exe (ffmpeg bundled
+    opzionale), poi nel PATH di sistema. L'hardsub è l'unica funzione che lo
+    richiede; la trascrizione NON ne ha bisogno (usa PyAV).
+    """
+    import shutil
+    import sys as _sys
+    # Cartella dell'eseguibile (bundle PyInstaller) o del progetto.
+    if getattr(_sys, "frozen", False):
+        base = os.path.dirname(_sys.executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    local = os.path.join(base, exe)
+    if os.path.isfile(local):
+        return local
+    return shutil.which("ffmpeg")
+
+
 def has_ffmpeg() -> bool:
     """True se un eseguibile ffmpeg è disponibile (per l'hardsub)."""
-    import shutil
-    return shutil.which("ffmpeg") is not None
+    return _ffmpeg_path() is not None
 
 
 def _load_audio_boosted(media_path: str, target_sr: int = 16000):
@@ -673,20 +722,19 @@ def _load_audio_boosted(media_path: str, target_sr: int = 16000):
     import numpy as np
 
     container = av.open(media_path)
-    try:
-        stream = next(s for s in container.streams if s.type == "audio")
-    except StopIteration:
-        raise RuntimeError("Nessuna traccia audio nel file.")
-
-    resampler = av.audio.resampler.AudioResampler(
-        format="s16", layout="mono", rate=target_sr)
-
     chunks: list[np.ndarray] = []
-    for frame in container.decode(stream):
-        for rframe in resampler.resample(frame):
-            arr = rframe.to_ndarray().reshape(-1)
-            chunks.append(arr)
-    container.close()
+    try:
+        stream = next((s for s in container.streams if s.type == "audio"), None)
+        if stream is None:
+            raise RuntimeError("Nessuna traccia audio nel file.")
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=target_sr)
+        for frame in container.decode(stream):
+            for rframe in resampler.resample(frame):
+                arr = rframe.to_ndarray().reshape(-1)
+                chunks.append(arr)
+    finally:
+        container.close()  # chiusura garantita anche in caso di errore
 
     if not chunks:
         raise RuntimeError("Audio vuoto dopo la decodifica.")
@@ -709,10 +757,12 @@ def burn_subtitles(video_path: str, srt_path: str, output_path: str,
     file. Richiede ffmpeg nel PATH. Solleva RuntimeError se ffmpeg manca o fallisce.
     """
     import subprocess
-    if not has_ffmpeg():
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
         raise RuntimeError(
-            "ffmpeg non trovato: serve per masterizzare i sottotitoli nel video. "
-            "Installa ffmpeg e riprova (l'estrazione sottotitoli non lo richiede)."
+            "ffmpeg non trovato: serve solo per masterizzare i sottotitoli nel "
+            "video. Metti 'ffmpeg.exe' accanto all'app oppure installalo nel "
+            "sistema (l'estrazione dei sottotitoli NON lo richiede)."
         )
     if progress:
         progress(0.0, "Masterizzo i sottotitoli nel video (ffmpeg)...")
@@ -720,7 +770,7 @@ def burn_subtitles(video_path: str, srt_path: str, output_path: str,
     # Il filtro subtitles vuole il path con escape particolare su Windows.
     srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
     vf = f"subtitles='{srt_escaped}'"
-    cmd = ["ffmpeg", "-y", "-i", video_path, "-vf", vf,
+    cmd = [ffmpeg, "-y", "-i", video_path, "-vf", vf,
            "-c:a", "copy", output_path]
     log.info("Hardsub: %s", " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)

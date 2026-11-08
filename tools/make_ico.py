@@ -48,8 +48,8 @@ def _draw_png_fallback(size: int = 512) -> bool:
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    # Gradiente verticale viola (#6C5CE7 -> #3A2FA0)
-    top = (0x6C, 0x5C, 0xE7)
+    # Gradiente verticale viola (coerente col brand UI #7C6CF0 -> #3A2FA0)
+    top = (0x7C, 0x6C, 0xF0)
     bot = (0x3A, 0x2F, 0xA0)
     for y in range(s):
         t = y / (s - 1)

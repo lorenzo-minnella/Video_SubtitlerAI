@@ -60,6 +60,14 @@ def load_settings() -> dict:
                 data.update({k: saved[k] for k in saved if k in DEFAULTS})
     except Exception as exc:
         log.warning("Impossibile leggere le impostazioni (%s): uso i default.", exc)
+
+    # Validazione: 'formats' deve essere una lista non vuota di formati validi.
+    valid_fmt = {"srt", "vtt", "txt"}
+    fmts = [f for f in data.get("formats", []) if f in valid_fmt]
+    data["formats"] = fmts or ["srt"]
+    # 'theme' deve essere uno dei valori ammessi.
+    if data.get("theme") not in ("dark", "light"):
+        data["theme"] = "dark"
     return data
 
 
